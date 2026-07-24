@@ -4,6 +4,7 @@
  * Supports:
  *   - Basic: d20, 3d6, d% (1d100)
  *   - Arithmetic: 2d6+3, 1d4-1, 1d6+1d4
+ *   - Multiplication: 5*3d6, 2*2d8+3 (multiplication has precedence over +/-)
  *   - Keep highest (khN): 4d6kh3 (keep highest 3 of 4d6)
  *   - Keep lowest (klN): 2d20kl1 (D&D disadvantage)
  *   - Exploding (!): 1d6! (roll max → roll again, accumulate)
@@ -40,8 +41,10 @@ interface RollStep {
 interface DiceResult {
 	expression: string;
 	reason?: string;
-	hidden: boolean;
+	hiddenMode: "open" | "hide_result" | "hidden";
 	steps: RollStep[];
+	/** Operators between consecutive steps (length = steps.length - 1) */
+	ops: string[];
 	total: number;
 }
 
@@ -52,6 +55,7 @@ type TokenType =
 	| "d"
 	| "plus"
 	| "minus"
+	| "star"
 	| "percent"
 	| "explode"
 	| "kh"
@@ -98,6 +102,10 @@ class Tokenizer {
 		if (ch === "-") {
 			this.pos++;
 			return { type: "minus" };
+		}
+		if (ch === "*") {
+			this.pos++;
+			return { type: "star" };
 		}
 		if (ch === "%") {
 			this.pos++;
@@ -372,23 +380,26 @@ function evaluateExpression(expression: string): DiceResult {
 	const tokenizer = new Tokenizer(expression);
 
 	const steps: RollStep[] = [];
-	const totalOps: Array<{ op: "+" | "-"; step: RollStep }> = [];
+	const ops: string[] = [];
 
 	// First term
-	const first = evaluateTerm(tokenizer);
-	totalOps.push({ op: "+", step: first });
+	steps.push(evaluateTerm(tokenizer));
 
-	// Remaining +/- terms
+	// Remaining terms
 	while (true) {
 		const op = tokenizer.peek();
 		if (op.type === "plus") {
 			tokenizer.next();
-			const step = evaluateTerm(tokenizer);
-			totalOps.push({ op: "+", step });
+			ops.push("+");
+			steps.push(evaluateTerm(tokenizer));
 		} else if (op.type === "minus") {
 			tokenizer.next();
-			const step = evaluateTerm(tokenizer);
-			totalOps.push({ op: "-", step });
+			ops.push("-");
+			steps.push(evaluateTerm(tokenizer));
+		} else if (op.type === "star") {
+			tokenizer.next();
+			ops.push("*");
+			steps.push(evaluateTerm(tokenizer));
 		} else {
 			break;
 		}
@@ -400,17 +411,38 @@ function evaluateExpression(expression: string): DiceResult {
 		throw new Error("表达式后有无法解析的内容");
 	}
 
-	// Calculate total
+	// Calculate total with * precedence (multiplication before addition/subtraction)
+	const values = steps.map((s) => s.total);
+
+	let i = 0;
 	let total = 0;
-	for (const { op, step } of totalOps) {
-		if (op === "+") total += step.total;
-		else total -= step.total;
+
+	// First term (and any chained multiplication after it)
+	let currentValue = values[0];
+	while (i < ops.length && ops[i] === "*") {
+		currentValue *= values[i + 1];
+		i++;
+	}
+	total += currentValue;
+
+	// Remaining terms
+	while (i < ops.length) {
+		const op = ops[i]; // + or -
+		i++;
+		let value = values[i]; // term after the operator
+		while (i < ops.length && ops[i] === "*") {
+			value *= values[i + 1];
+			i++;
+		}
+		if (op === "+") total += value;
+		else total -= value;
 	}
 
 	return {
 		expression,
-		hidden: false,
-		steps: totalOps.map((o) => o.step),
+		hiddenMode: "open",
+		steps,
+		ops,
 		total,
 	};
 }
@@ -418,36 +450,48 @@ function evaluateExpression(expression: string): DiceResult {
 // ──────── Tool definition ────────
 
 const DiceParams = Type.Object({
-	expression: Type.String({ description: "掷骰表达式，如 d20、3d6、2d6+3、4d6kh3、1d6!、1d100p 等" }),
+	expression: Type.String({ description: "掷骰表达式，如 d20、3d6、2d6+3、5*3d6、4d6kh3、1d6!、1d100p 等" }),
 	reason: Type.Optional(Type.String({ description: "本次掷骰的原因（可选）" })),
 	hidden: Type.Optional(
-		Type.Boolean({ description: "是否为暗骰。若是，用户仅看到「（过了一个暗骰）」" }),
+		Type.String({ description: "显示模式：'open' 明骰（默认），'hide_result' 隐藏结果仅显示原因，'hidden' 完全隐藏" }),
 	),
 });
 
 function formatResultForLLM(result: DiceResult): string {
-	const { expression, reason, steps, total } = result;
+	const { expression, reason, steps, ops, total } = result;
 
-	const parts: string[] = [];
-	for (const s of steps) {
-		if (s.label.match(/^[0-9]+$/)) {
-			parts.push(String(s.total));
-		} else if (s.kept) {
-			parts.push(`(${s.kept.join("+")})`);
-		} else if (s.rolls.length === 1) {
-			parts.push(String(s.rolls[0]));
-		} else {
-			parts.push(`(${s.rolls.join("+")})`);
+	/** Format a single step's value for display */
+	function formatStepValue(s: RollStep): string {
+		if (/^\d+$/.test(s.label)) {
+			return String(s.total);
 		}
+		if (s.kept) {
+			return `(${s.kept.join("+")})`;
+		}
+		if (s.rolls.length === 1) {
+			return String(s.rolls[0]);
+		}
+		if (s.rolls.length > 1) {
+			return `(${s.rolls.join("+")})`;
+		}
+		return s.label;
 	}
 
+	// Build the expanded expression with proper operators
+	const parts: string[] = [];
+	parts.push(formatStepValue(steps[0]));
+	for (let i = 0; i < ops.length; i++) {
+		parts.push(` ${ops[i]} `);
+		parts.push(formatStepValue(steps[i + 1]));
+	}
+	const expanded = parts.join("");
+
 	let text: string;
-	const partsStr = parts.join(" + ");
 	// Single die without modifiers = just show the value
 	if (steps.length === 1 && steps[0].rolls.length === 1 && !steps[0].kept) {
 		text = `${expression} = ${total}`;
 	} else {
-		text = `${expression} = ${partsStr} = ${total}`;
+		text = `${expression} = ${expanded} = ${total}`;
 	}
 
 	if (reason) {
@@ -475,6 +519,16 @@ export default function (pi: ExtensionAPI) {
 		execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
 			const { expression, reason, hidden } = params;
 
+			// Normalize hidden mode
+			let hiddenMode: "open" | "hide_result" | "hidden" = "open";
+			if (hidden === "hidden") {
+				hiddenMode = "hidden";
+			} else if (hidden === "hide_result") {
+				hiddenMode = "hide_result";
+			} else if (hidden === "open" || hidden === undefined) {
+				hiddenMode = "open";
+			}
+
 			if (!expression || typeof expression !== "string" || expression.trim().length === 0) {
 				throw new Error("掷骰表达式不能为空。示例：d20、3d6、2d6+3、4d6kh3、1d6!");
 			}
@@ -482,13 +536,13 @@ export default function (pi: ExtensionAPI) {
 			const trimmedExpr = expression.trim();
 
 			// Validate basic character set before parsing
-			if (!/^[0-9dD%+\-!kKhHlLpPbB\s]+$/.test(trimmedExpr)) {
+			if (!/^[0-9dD%+\-!kKhHlLpPbB\s*]+$/.test(trimmedExpr)) {
 				throw new Error(`掷骰表达式含有非法字符: "${trimmedExpr}"`);
 			}
 
 			const result = evaluateExpression(trimmedExpr);
 			result.reason = reason;
-			result.hidden = hidden ?? false;
+			result.hiddenMode = hiddenMode;
 
 			const llmText = formatResultForLLM(result);
 
@@ -497,8 +551,9 @@ export default function (pi: ExtensionAPI) {
 				details: {
 					expression: result.expression,
 					reason: result.reason,
-					hidden: result.hidden,
+					hiddenMode: result.hiddenMode,
 					steps: result.steps,
+					ops: result.ops,
 					total: result.total,
 					text: llmText,
 				},
@@ -513,12 +568,17 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			// ── Hidden dice ──
-			if (details.hidden) {
+			if (details.hiddenMode === "hidden") {
 				return new Text(theme.fg("muted", "（过了一个暗骰）"), 0, 0);
+			}
+			if (details.hiddenMode === "hide_result") {
+				let hiddenText = "（过了一个暗骰）";
+				if (details.reason) hiddenText += ` (${details.reason})`;
+				return new Text(theme.fg("muted", hiddenText), 0, 0);
 			}
 
 			// ── Visible dice ──
-			const { expression, reason, steps, total } = details;
+			const { expression, reason, steps, ops, total, hiddenMode } = details;
 			let display = theme.fg("toolTitle", theme.bold("🎲 掷骰 ")) + theme.fg("accent", expression);
 
 			if (reason) {
@@ -526,8 +586,14 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			// Steps
-			for (const step of steps) {
+			for (let stepIdx = 0; stepIdx < steps.length; stepIdx++) {
+				const step = steps[stepIdx];
 				display += "\n  ";
+
+				// Show operator before steps after the first
+				if (stepIdx > 0 && ops && stepIdx - 1 < ops.length) {
+					display += theme.fg("accent", `${ops[stepIdx - 1]} `);
+				}
 
 				const isPlainNumber = /^\d+$/.test(step.label);
 				if (isPlainNumber) {
