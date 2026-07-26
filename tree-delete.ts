@@ -316,7 +316,7 @@ export default function (pi: ExtensionAPI) {
             } else {
               lines.push(
                 theme.bold(theme.fg("warning", "  PRUNE")) +
-                  theme.fg("muted", " — keep only this path, delete everything else?") +
+                  theme.fg("muted", " — keep only Root → this entry, delete all other branches?") +
                   "  " +
                   theme.fg("success", "[y/Enter]") +
                   theme.fg("muted", " confirm") +
@@ -391,7 +391,8 @@ export default function (pi: ExtensionAPI) {
         }
         const pathSet = new Set(path);
 
-        // Collect sibling subtrees at every level that are NOT on the path
+        // Collect sibling subtrees at every level that are NOT on the path,
+        // plus all children of the selected entry (make it a leaf).
         const otherRoots: string[] = [];
         for (const pathEntryId of path) {
           const entry = sm.getEntry(pathEntryId);
@@ -413,6 +414,12 @@ export default function (pi: ExtensionAPI) {
               }
             }
           }
+        }
+
+        // Also remove all children of the selected entry (prune its descendants)
+        const selectedChildren = sm.getChildren(action.entryId);
+        for (const child of selectedChildren) {
+          otherRoots.push(child.id);
         }
 
         // Delete every off-path subtree
