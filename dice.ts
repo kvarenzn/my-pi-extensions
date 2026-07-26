@@ -11,6 +11,12 @@
  *   - CoC penalty (p): 1d100p (tens die twice, take higher)
  *   - CoC bonus (b): 1d100b (tens die twice, take lower)
  *   - Combinations: 3d6!kh2 (exploding, keep highest 2)
+ *
+ * Loaded Dice (灌铅骰子):
+ *   Set env LOADED_DICE=1 to enable. When active, the tool prompts the user
+ *   via TUI input dialogs for each dice term's values instead of using random.
+ *   The LLM never sees the prompts — results are formatted identically to
+ *   normal rolls. Useful for TTRPG "cheating" during LLM-as-GM sessions.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -176,14 +182,154 @@ class Tokenizer {
 	}
 }
 
+// ──────── Loaded Dice State ────────
+
+let loadedDiceQueue: number[] = [];
+let loadedDiceEnabled = false;
+/** Mutex to serialize loaded-dice evaluations (avoid race on global state + UI dialogs). */
+let loadedDiceLock: Promise<void> = Promise.resolve();
+
 // ──────── Dice Rolling Primitives ────────
 
 function rollDie(sides: number): number {
+	if (loadedDiceEnabled && loadedDiceQueue.length > 0) {
+		return loadedDiceQueue.shift()!;
+	}
 	return Math.floor(Math.random() * sides) + 1;
 }
 
 function sum(arr: number[]): number {
 	return arr.reduce((a, b) => a + b, 0);
+}
+
+// ──────── Dice Term Scanner (for loaded dice) ────────
+
+interface DiceTermInfo {
+	label: string;
+	count: number;
+	sides: number;
+	hasExplode: boolean;
+	keepHigh?: number;
+	keepLow?: number;
+	hasPenalty: boolean;
+	hasBonus: boolean;
+}
+
+/** Lightweight scan: extract dice term metadata without rolling. */
+function scanDiceTerms(expression: string): DiceTermInfo[] {
+	const tokenizer = new Tokenizer(expression);
+	const terms: DiceTermInfo[] = [];
+
+	// First term
+	const first = scanOneTerm(tokenizer);
+	if (first) terms.push(first);
+
+	// Remaining terms
+	while (true) {
+		const op = tokenizer.peek();
+		if (op.type === "plus" || op.type === "minus" || op.type === "star") {
+			tokenizer.next();
+			const term = scanOneTerm(tokenizer);
+			if (term) terms.push(term);
+		} else {
+			break;
+		}
+	}
+
+	return terms;
+}
+
+/** Scan a single term: returns DiceTermInfo for dice terms, null for plain numbers. */
+function scanOneTerm(tokenizer: Tokenizer): DiceTermInfo | null {
+	const peek = tokenizer.peek();
+
+	if (peek.type === "number") {
+		const savedPos = tokenizer.save();
+		tokenizer.next();
+		const afterNum = tokenizer.peek();
+		if (afterNum.type === "d" || afterNum.type === "percent") {
+			tokenizer.restore(savedPos);
+			return scanOneDiceTerm(tokenizer);
+		}
+		// Plain number — skip
+		return null;
+	}
+
+	if (peek.type === "d" || peek.type === "percent") {
+		return scanOneDiceTerm(tokenizer);
+	}
+
+	return null;
+}
+
+/** Scan a single dice term (e.g. "3d6", "d%", "4d6kh3"). Mirrors evaluateDiceTerm without rolling. */
+function scanOneDiceTerm(tokenizer: Tokenizer): DiceTermInfo {
+	let count: number;
+	let sides: number;
+
+	const peek = tokenizer.peek();
+	if (peek.type === "number") {
+		count = (tokenizer.next() as Token & { value: number }).value;
+		if (count < 1) throw new Error("骰子数量必须为正整数");
+	} else {
+		count = 1;
+	}
+
+	const dToken = tokenizer.next();
+	if (dToken.type !== "d") {
+		throw new Error("掷骰表达式需要 'd'");
+	}
+
+	const sidesToken = tokenizer.peek();
+	if (sidesToken.type === "percent") {
+		tokenizer.next();
+		sides = 100;
+	} else if (sidesToken.type === "number") {
+		sides = (tokenizer.next() as Token & { value: number }).value;
+		if (sides < 2) throw new Error("骰子面数必须≥2");
+	} else {
+		throw new Error("骰子面数需要是正整数或 %");
+	}
+
+	// Parse suffixes
+	let hasExplode = false;
+	let keepHigh: number | undefined;
+	let keepLow: number | undefined;
+	let hasPenalty = false;
+	let hasBonus = false;
+
+	while (true) {
+		const t = tokenizer.peek();
+		if (t.type === "explode") {
+			tokenizer.next();
+			hasExplode = true;
+		} else if (t.type === "kh") {
+			tokenizer.next();
+			keepHigh = t.value!;
+		} else if (t.type === "kl") {
+			tokenizer.next();
+			keepLow = t.value!;
+		} else if (t.type === "p") {
+			tokenizer.next();
+			hasPenalty = true;
+		} else if (t.type === "b") {
+			tokenizer.next();
+			hasBonus = true;
+		} else {
+			break;
+		}
+	}
+
+	// Build label
+	let label = `${count}d`;
+	label += sides === 100 ? "%" : sides;
+	if (hasExplode) label += "!";
+	if (keepHigh !== undefined) label += `kh${keepHigh}`;
+	if (keepLow !== undefined) label += `kl${keepLow}`;
+	if (hasPenalty) label += "p";
+	if (hasBonus) label += "b";
+
+	return { label, count, sides, hasExplode, keepHigh, keepLow, hasPenalty, hasBonus };
 }
 
 // ──────── Parser / Evaluator ────────
@@ -447,6 +593,180 @@ function evaluateExpression(expression: string): DiceResult {
 	};
 }
 
+// ──────── Loaded Dice Prompting ────────
+
+/**
+ * Prompt the user for loaded dice values for a single dice term.
+ * Returns array of queued values, or null if user cancelled.
+ */
+async function promptLoadedDice(
+	ctx: {
+		ui: {
+			input: (title: string, placeholder?: string) => Promise<string | undefined>;
+			notify: (message: string, type?: "info" | "warning" | "error") => void;
+		};
+	},
+	term: DiceTermInfo,
+): Promise<number[] | null> {
+	const { label, count, sides, hasExplode, keepHigh, keepLow, hasPenalty, hasBonus } = term;
+
+	// ── CoC penalty / bonus dice ──
+	if (hasPenalty || hasBonus) {
+		const mode = hasPenalty ? "惩罚骰(p)" : "奖励骰(b)";
+		let result: number;
+
+		while (true) {
+			const input = await ctx.ui.input(
+				`请输入 ${label} 的结果（${mode}）`,
+				"1-100 之间的整数",
+			);
+			if (input === undefined || input.trim() === "") return null; // User cancelled
+
+			const parsed = parseInt(input.trim(), 10);
+			if (isNaN(parsed) || parsed < 1 || parsed > 100) {
+				ctx.ui.notify(`无效输入: "${input.trim()}"，请输入 1-100 之间的整数。`, "error");
+				continue;
+			}
+			result = parsed;
+			break;
+		}
+
+		// Reverse-engineer the internal d10 rolls
+		const rawValue = result === 100 ? 0 : result;
+		const chosenTens = Math.floor(rawValue / 10);
+		const ones = rawValue % 10;
+
+		// rollDie(10) returns 1-10, we subtract 1 to get 0-9
+		const onesDie = ones + 1; // rollDie(10) → ones
+
+		let tensDie1: number;
+		let tensDie2: number;
+
+		if (hasPenalty) {
+			// max(tens1, tens2) = chosenTens
+			// One die must produce chosenTens, the other ≤ chosenTens
+			tensDie1 = chosenTens + 1;
+			tensDie2 = Math.floor(Math.random() * (chosenTens + 1)) + 1;
+		} else {
+			// min(tens1, tens2) = chosenTens
+			// One die must produce chosenTens, the other ≥ chosenTens
+			tensDie1 = chosenTens + 1;
+			tensDie2 = Math.floor(Math.random() * (10 - chosenTens)) + chosenTens + 1;
+		}
+
+		return [tensDie1, tensDie2, onesDie];
+	}
+
+	// ── Keep highest / lowest dice ──
+	if (keepHigh !== undefined || keepLow !== undefined) {
+		const keepCount = keepHigh ?? keepLow!;
+		const isKeepHigh = keepHigh !== undefined;
+		let kept: number[];
+
+		while (true) {
+			const input = await ctx.ui.input(
+				`请输入 ${label} 保留的 ${keepCount} 个值`,
+				`逗号分隔，如 ${Array(keepCount).fill("?").join(",")}（范围 1-${sides}）`,
+			);
+			if (input === undefined || input.trim() === "") return null; // User cancelled
+
+			const parsed = parseDiceInput(input.trim(), keepCount, keepCount, sides);
+			if (!parsed) {
+				ctx.ui.notify(`无效输入，请输入恰好 ${keepCount} 个 1-${sides} 的值，逗号分隔。`, "error");
+				continue;
+			}
+			kept = parsed;
+			break;
+		}
+
+		// Auto-generate the dropped value(s)
+		const dropCount = count - keepCount;
+		const dropped: number[] = [];
+		for (let i = 0; i < dropCount; i++) {
+			if (isKeepHigh) {
+				// Dropped must be ≤ min(kept)
+				const maxDrop = Math.min(...kept);
+				dropped.push(Math.floor(Math.random() * maxDrop) + 1);
+			} else {
+				// Dropped must be ≥ max(kept)
+				const minDrop = Math.max(...kept);
+				dropped.push(Math.floor(Math.random() * (sides - minDrop + 1)) + minDrop);
+			}
+		}
+
+		// Interleave kept and dropped for a natural-looking roll order
+		const allValues = [...kept, ...dropped];
+		// Shuffle so kept values aren't always first
+		for (let i = allValues.length - 1; i > 0; i--) {
+			const j = Math.floor(Math.random() * (i + 1));
+			[allValues[i], allValues[j]] = [allValues[j], allValues[i]];
+		}
+
+		return allValues;
+	}
+
+	// ── Exploding dice ──
+	if (hasExplode) {
+		while (true) {
+			const input = await ctx.ui.input(
+				`请输入 ${label} 的所有骰子值`,
+				`逗号分隔（范围 1-${sides}，至少 ${count} 个，可超过），如 6,1,6,2,3`,
+			);
+			if (input === undefined || input.trim() === "") return null; // User cancelled
+
+			const parsed = parseDiceInput(input.trim(), count, undefined, sides);
+			if (!parsed) {
+				ctx.ui.notify(`无效输入，请输入至少 ${count} 个 1-${sides} 的值，逗号分隔。`, "error");
+				continue;
+			}
+			return parsed;
+		}
+	}
+
+	// ── Normal dice ──
+	while (true) {
+		const input = await ctx.ui.input(
+			`请输入 ${label} 的结果`,
+			`逗号分隔，如 ${count === 1 ? "?" : Array(count).fill("?").join(",")}（范围 1-${sides}）`,
+		);
+		if (input === undefined || input.trim() === "") return null; // User cancelled
+
+		const parsed = parseDiceInput(input.trim(), count, count, sides);
+		if (!parsed) {
+			ctx.ui.notify(`无效输入，请输入恰好 ${count} 个 1-${sides} 的值，逗号分隔。`, "error");
+			continue;
+		}
+		return parsed;
+	}
+}
+
+/**
+ * Parse comma-separated dice values. Validates count and range.
+ * - minCount: minimum number of values required
+ * - exactCount: if set, exactly this many values required (null = no upper limit beyond minCount)
+ * - sides: each value must be 1..sides
+ * Returns null on failure.
+ */
+function parseDiceInput(
+	input: string,
+	minCount: number,
+	exactCount: number | undefined,
+	sides: number,
+): number[] | null {
+	const parts = input.split(",").map((s) => s.trim()).filter((s) => s !== "");
+	if (parts.length < minCount) return null;
+	if (exactCount !== undefined && parts.length !== exactCount) return null;
+
+	const values: number[] = [];
+	for (const part of parts) {
+		const n = parseInt(part, 10);
+		if (isNaN(n) || n < 1 || n > sides) return null;
+		values.push(n);
+	}
+
+	return values;
+}
+
 // ──────── Tool definition ────────
 
 const DiceParams = Type.Object({
@@ -516,7 +836,7 @@ export default function (pi: ExtensionAPI) {
 		],
 		parameters: DiceParams,
 
-		execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+		execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => {
 			const { expression, reason, hidden } = params;
 
 			// Normalize hidden mode
@@ -540,24 +860,71 @@ export default function (pi: ExtensionAPI) {
 				throw new Error(`掷骰表达式含有非法字符: "${trimmedExpr}"`);
 			}
 
-			const result = evaluateExpression(trimmedExpr);
-			result.reason = reason;
-			result.hiddenMode = hiddenMode;
+			// ── Loaded dice mode ──
+			const useLoadedDice = process.env.LOADED_DICE === "1" && ctx.hasUI;
 
-			const llmText = formatResultForLLM(result);
+			if (useLoadedDice) {
+				// Serialize: each call creates a new promise, waits for the
+				// previous one, and resolves its own when the critical section
+				// (prompting + evaluation) finishes.
+				let release: () => void;
+				const previousLock = loadedDiceLock;
+				loadedDiceLock = new Promise<void>((resolve) => {
+					release = resolve;
+				});
+				await previousLock;
 
-			return {
-				content: [{ type: "text", text: llmText }],
-				details: {
-					expression: result.expression,
-					reason: result.reason,
-					hiddenMode: result.hiddenMode,
-					steps: result.steps,
-					ops: result.ops,
-					total: result.total,
-					text: llmText,
-				},
-			};
+				try {
+					const diceTerms = scanDiceTerms(trimmedExpr);
+					const allValues: number[] = [];
+
+					for (const term of diceTerms) {
+						const values = await promptLoadedDice(ctx, term);
+						if (values === null) {
+							// User cancelled — fall back to random for this whole roll
+							allValues.length = 0;
+							break;
+						}
+						allValues.push(...values);
+					}
+
+					if (allValues.length > 0) {
+						loadedDiceQueue = allValues;
+						loadedDiceEnabled = true;
+					}
+				} catch {
+					// Scan or prompt failed — fall back to random
+					loadedDiceQueue = [];
+					loadedDiceEnabled = false;
+				} finally {
+					release!();
+				}
+			}
+
+			try {
+				const result = evaluateExpression(trimmedExpr);
+				result.reason = reason;
+				result.hiddenMode = hiddenMode;
+
+				const llmText = formatResultForLLM(result);
+
+				return {
+					content: [{ type: "text", text: llmText }],
+					details: {
+						expression: result.expression,
+						reason: result.reason,
+						hiddenMode: result.hiddenMode,
+						steps: result.steps,
+						ops: result.ops,
+						total: result.total,
+						text: llmText,
+					},
+				};
+			} finally {
+				// Always reset loaded dice state after evaluation
+				loadedDiceQueue = [];
+				loadedDiceEnabled = false;
+			}
 		},
 
 		renderResult(result, { expanded }, theme, _context) {
