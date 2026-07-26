@@ -435,11 +435,42 @@ export default function (pi: ExtensionAPI) {
           }
         }
 
-        // Navigate to the selected entry if we aren't already there
+        // Navigate to the selected entry if we aren't already there.
+        // When the target is a user message, behave like /tree: navigate
+        // to its parent and restore the message text into the editor.
         const currentLeaf = sm.getLeafId();
         if (currentLeaf !== action.entryId) {
           if (typeof (ctx as any).navigateTree === "function") {
-            await (ctx as any).navigateTree(action.entryId, { summarize: false });
+            const targetEntry = sm.getEntry(action.entryId);
+            const isUserMsg =
+              targetEntry?.type === "message" &&
+              targetEntry.message.role === "user";
+
+            if (isUserMsg && targetEntry.parentId) {
+              // Navigate to the entry before the user message
+              await (ctx as any).navigateTree(targetEntry.parentId, {
+                summarize: false,
+              });
+
+              // Restore the user message text into the editor
+              const content = targetEntry.message.content;
+              let text = "";
+              if (typeof content === "string") {
+                text = content;
+              } else if (Array.isArray(content)) {
+                text = content
+                  .filter((c: any) => c.type === "text")
+                  .map((c: any) => c.text)
+                  .join("");
+              }
+              if (text && typeof ctx.ui.setEditorText === "function") {
+                ctx.ui.setEditorText(text);
+              }
+            } else {
+              await (ctx as any).navigateTree(action.entryId, {
+                summarize: false,
+              });
+            }
           }
         }
 
