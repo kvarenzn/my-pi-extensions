@@ -10,8 +10,8 @@ export function formatInventory(items: InventoryItem[]): string {
   if (items.length === 0) return "(空)";
   return items.map(i => {
     const cnt = formatCount(i.count);
-    if (cnt === "1") return i.name;
-    return `${i.name} x${cnt}`;
+    const base = cnt === "1" ? i.name : `${i.name} x${cnt}`;
+    return i.notes ? `${base}（${i.notes}）` : base;
   }).join(", ");
 }
 
@@ -39,7 +39,7 @@ export function getPlayerOrThrow(state: GameState, name: string): Player {
   const p = state.players[name];
   if (!p) {
     const names = Object.keys(state.players).join(", ") || "(无)";
-    throw new Error(`未找到"${name}"。当前角色: ${names}\n如需创建调查员请使用 pc_create`);
+    throw new Error(`未找到"${name}"。当前角色: ${names}\n如需创建调查员请使用 coc_pc_create`);
   }
   return p;
 }
@@ -176,7 +176,9 @@ export async function executeSceneGet(
 ) {
   const state = rebuildState(ctx);
   const s = state.scene;
-  const text = `当前场景: ${s.location || "未知"} | 时间: ${s.time || "未知"}`;
+  const desc = s.description;
+  let text = `当前场景: ${s.location || "未知"} | 时间: ${s.time || "未知"}`;
+  if (desc) text += `\n${desc}`;
   return {
     content: [{ type: "text" as const, text }],
     details: { arguments: {}, result: { scene: s } },
@@ -204,6 +206,49 @@ export async function executeCombatStatus(
   };
 }
 
+// ── Session Meta Tools ──
+
+export async function executeSessionGet(
+  _params: {},
+  ctx: ExtensionContext
+) {
+  const state = rebuildState(ctx);
+  const m = state.session;
+  const modeText = m.ruleMode === "narrative" ? "完全叙事裁定" : m.ruleMode === "hybrid" ? "混合模式" : "未设定";
+  let text = `规则模式: ${modeText}`;
+  if (m.scenarioName) text += ` | 模组: ${m.scenarioName}`;
+  return {
+    content: [{ type: "text" as const, text }],
+    details: { arguments: {}, result: { session: m } },
+  };
+}
+
+export async function executeSessionSet(
+  params: { ruleMode?: string; scenarioName?: string },
+  ctx: ExtensionContext
+) {
+  const state = rebuildState(ctx);
+  const changes: string[] = [];
+
+  if (params.ruleMode !== undefined) {
+    if (!["narrative", "hybrid", ""].includes(params.ruleMode)) {
+      throw new Error(`ruleMode 必须是 "narrative" 或 "hybrid"，收到 "${params.ruleMode}"`);
+    }
+    state.session.ruleMode = params.ruleMode as "" | "narrative" | "hybrid";
+    const modeText = params.ruleMode === "narrative" ? "完全叙事裁定" : params.ruleMode === "hybrid" ? "混合模式" : "已清除";
+    changes.push(`规则模式 → ${modeText}`);
+  }
+  if (params.scenarioName !== undefined) {
+    state.session.scenarioName = params.scenarioName;
+    changes.push(`模组名 → ${params.scenarioName || "已清除"}`);
+  }
+
+  return {
+    content: [{ type: "text" as const, text: changes.length > 0 ? `会话更新: ${changes.join(" | ")}` : "会话状态无变化。" }],
+    details: { arguments: params, result: { ruleMode: params.ruleMode, scenarioName: params.scenarioName } },
+  };
+}
+
 // ── Player Mutation Tools ──
 
 export async function executePcCreate(
@@ -212,7 +257,7 @@ export async function executePcCreate(
 ) {
   const state = rebuildState(ctx);
   if (state.players[params.name]) {
-    throw new Error(`"${params.name}"已存在，如需修改请使用 pc_set`);
+    throw new Error(`"${params.name}"已存在，如需修改请使用 coc_pc_set`);
   }
 
   const player: Player = {
@@ -260,7 +305,7 @@ export async function executePcSet(
       details: { arguments: params, result: { field, value: player.status } },
     };
   } else if (field === "inventory") {
-    throw new Error(`"inventory"请使用 pc_item_add / pc_item_rm 操作`);
+    throw new Error(`"inventory"请使用 coc_pc_item_add / coc_pc_item_rm 操作`);
   }
 
   if (field.startsWith("attributes.") || field.startsWith("skills.")) {
@@ -300,7 +345,7 @@ export async function executePcMod(
 
   if (!NUMERIC_FIELDS.has(field) && !field.startsWith("attributes.") && !field.startsWith("skills.")) {
     const current = getNestedField(oldPlayer, field);
-    throw new Error(`"${field}"不是数值域（当前值: ${JSON.stringify(current)}），请使用 pc_set`);
+    throw new Error(`"${field}"不是数值域（当前值: ${JSON.stringify(current)}），请使用 coc_pc_set`);
   }
 
   if (field.startsWith("skills.")) {
@@ -369,7 +414,7 @@ export async function executePcStatusRm(
 // ── Item Tools ──
 
 export async function executePcItemAdd(
-  params: { name: string; item: string; count?: number | string },
+  params: { name: string; item: string; count?: number | string; notes?: string },
   ctx: ExtensionContext
 ) {
   const state = rebuildState(ctx);
@@ -381,14 +426,17 @@ export async function executePcItemAdd(
 
   if (idx !== -1) {
     player.inventory[idx].count = addCounts(player.inventory[idx].count, addCount);
+    if (params.notes !== undefined) {
+      player.inventory[idx].notes = params.notes;
+    }
   } else {
-    player.inventory.push({ name: params.item, count: addCount });
+    player.inventory.push({ name: params.item, count: addCount, notes: params.notes });
   }
 
   const display = formatInventory(player.inventory);
   return {
     content: [{ type: "text" as const, text: `${params.name} 获得: ${params.item}${params.count !== undefined ? " x" + formatCount(addCount) : ""}。物品: ${display}` }],
-    details: { arguments: params, result: { item: params.item, count: params.count } },
+    details: { arguments: params, result: { item: params.item, count: params.count, notes: params.notes } },
   };
 }
 
@@ -473,7 +521,7 @@ export async function executeNpcCreate(
 ) {
   const state = rebuildState(ctx);
   if (state.npcs[params.name]) {
-    throw new Error(`NPC "${params.name}"已存在，如需修改请使用 npc_set`);
+    throw new Error(`NPC "${params.name}"已存在，如需修改请使用 coc_npc_set`);
   }
 
   const npc: Npc = {
@@ -499,7 +547,7 @@ export async function executeNpcSet(
   const oldNpc = state.npcs[params.name];
   if (!oldNpc) {
     const names = Object.keys(state.npcs).join(", ") || "(无)";
-    throw new Error(`未找到NPC"${params.name}"。已知NPC: ${names}\n如需创建NPC请使用 npc_create`);
+    throw new Error(`未找到NPC"${params.name}"。已知NPC: ${names}\n如需创建NPC请使用 coc_npc_create`);
   }
 
   const validFields = ["role", "location", "attitude", "status", "notes"];
@@ -539,17 +587,18 @@ export async function executeClueAdd(
 }
 
 export async function executeSceneSet(
-  params: { location?: string; time?: string },
+  params: { location?: string; time?: string; description?: string },
   ctx: ExtensionContext
 ) {
   const state = rebuildState(ctx);
   const scene = { ...state.scene };
   if (params.location !== undefined) scene.location = params.location;
   if (params.time !== undefined) scene.time = params.time;
+  if (params.description !== undefined) scene.description = params.description;
 
   return {
-    content: [{ type: "text" as const, text: `场景更新 → 位置: ${scene.location || "未知"} | 时间: ${scene.time || "未知"}` }],
-    details: { arguments: params, result: { location: params.location, time: params.time } },
+    content: [{ type: "text" as const, text: `场景更新 → 位置: ${scene.location || "未知"} | 时间: ${scene.time || "未知"}${scene.description ? "\n" + scene.description : ""}` }],
+    details: { arguments: params, result: { location: params.location, time: params.time, description: params.description } },
   };
 }
 
@@ -561,7 +610,7 @@ export async function executeCombatStart(
 ) {
   const state = rebuildState(ctx);
   if (state.combat) {
-    throw new Error("已有战斗进行中。请先调用 combat_end 结束当前战斗。");
+    throw new Error("已有战斗进行中。请先调用 coc_combat_end 结束当前战斗。");
   }
 
   const participants = params.participants.split(",").map(s => s.trim()).filter(Boolean);
@@ -587,7 +636,7 @@ export async function executeCombatNext(
 ) {
   const state = rebuildState(ctx);
   if (!state.combat) {
-    throw new Error("当前无战斗进行中。请使用 combat_start 开始战斗。");
+    throw new Error("当前无战斗进行中。请使用 coc_combat_start 开始战斗。");
   }
 
   const combat = structuredClone(state.combat);

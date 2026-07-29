@@ -8,13 +8,14 @@ import {
   executeNpcCreate, executeNpcSet, executeClueAdd, executeSceneSet,
   executeCombatStart, executeCombatNext, executeCombatEnd,
   executeCocLog, executeCocLogList,
+  executeSessionGet, executeSessionSet,
 } from "./tools";
 
 export default function (pi: ExtensionAPI) {
   // ═══ Query Tools ═══
 
   pi.registerTool({
-    name: "pc_get",
+    name: "coc_pc_get",
     label: "查询调查员",
     description: "查询调查员状态。不传参数返回全部调查员概要；传 name 查特定角色；传 location 按地点过滤。",
     promptSnippet: "Query investigator status",
@@ -26,7 +27,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerTool({
-    name: "npc_get",
+    name: "coc_npc_get",
     label: "查询NPC",
     description: "查询NPC信息。不传参数返回全部NPC列表；传 name 查特定NPC。",
     promptSnippet: "Query NPC information",
@@ -37,7 +38,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerTool({
-    name: "clue_list",
+    name: "coc_clue_list",
     label: "列出线索",
     description: "列出已发现的线索。可按地点过滤。",
     promptSnippet: "List discovered clues",
@@ -48,16 +49,16 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerTool({
-    name: "scene_get",
+    name: "coc_scene_get",
     label: "查看场景",
-    description: "查看当前场景位置和时间。",
+    description: "查看当前场景位置、时间和环境描述。",
     promptSnippet: "View current scene",
     parameters: Type.Object({}),
     execute: (_id, params, _signal, _onUpdate, ctx) => executeSceneGet(params, ctx),
   });
 
   pi.registerTool({
-    name: "combat_status",
+    name: "coc_combat_status",
     label: "查看战斗状态",
     description: "查看当前战斗状态（参与者、行动顺序、当前行动者）。",
     promptSnippet: "View combat status",
@@ -65,10 +66,33 @@ export default function (pi: ExtensionAPI) {
     execute: (_id, params, _signal, _onUpdate, ctx) => executeCombatStatus(params, ctx),
   });
 
+  // ═══ Session Meta Tools ═══
+
+  pi.registerTool({
+    name: "coc_session_get",
+    label: "查询会话状态",
+    description: "查询当前会话的全局状态（规则模式、模组名等）。",
+    promptSnippet: "Query session meta",
+    parameters: Type.Object({}),
+    execute: (_id, params, _signal, _onUpdate, ctx) => executeSessionGet(params, ctx),
+  });
+
+  pi.registerTool({
+    name: "coc_session_set",
+    label: "设置会话状态",
+    description: "设置会话级全局状态。ruleMode 为 \"narrative\"（完全叙事裁定）或 \"hybrid\"（混合模式）。",
+    promptSnippet: "Set session meta",
+    parameters: Type.Object({
+      ruleMode: Type.Optional(Type.String({ description: "规则模式: \"narrative\" 或 \"hybrid\"" })),
+      scenarioName: Type.Optional(Type.String({ description: "当前模组名" })),
+    }),
+    execute: (_id, params, _signal, _onUpdate, ctx) => executeSessionSet(params, ctx),
+  });
+
   // ═══ Player Mutation Tools ═══
 
   pi.registerTool({
-    name: "pc_create",
+    name: "coc_pc_create",
     label: "创建调查员",
     description: "创建新的调查员角色。hp/san/mp/luck 默认值为10/50/10/50。",
     promptSnippet: "Create investigator",
@@ -85,9 +109,9 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerTool({
-    name: "pc_set",
+    name: "coc_pc_set",
     label: "设置调查员属性",
-    description: "设置调查员的属性/技能/状态。数值域: hp, maxHp, san, maxSan, mp, maxMp, luck, attributes.X, skills.X。文本域: location, notes。数组域: status。inventory请用 pc_item_add/rm。",
+    description: "设置调查员的属性/技能/状态。数值域: hp, maxHp, san, maxSan, mp, maxMp, luck, attributes.X, skills.X。文本域: location, notes。数组域: status。inventory请用 coc_pc_item_add/coc_pc_item_rm。",
     promptSnippet: "Set investigator attribute",
     parameters: Type.Object({
       name: Type.String({ description: "调查员姓名" }),
@@ -98,7 +122,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerTool({
-    name: "pc_mod",
+    name: "coc_pc_mod",
     label: "增减数值",
     description: "增减调查员的数值域（hp, maxHp, san, maxSan, mp, maxMp, luck, attributes.*, skills.*）。delta 正数为增加，负数为减少。",
     promptSnippet: "Modify numeric value",
@@ -111,7 +135,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerTool({
-    name: "pc_status_add",
+    name: "coc_pc_status_add",
     label: "添加状态",
     description: "为调查员添加状态效果（如：中毒、晕眩、燃运）。",
     promptSnippet: "Add status effect",
@@ -123,7 +147,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerTool({
-    name: "pc_status_rm",
+    name: "coc_pc_status_rm",
     label: "移除状态",
     description: "移除调查员的状态效果。",
     promptSnippet: "Remove status effect",
@@ -137,20 +161,21 @@ export default function (pi: ExtensionAPI) {
   // ═══ Item Tools ═══
 
   pi.registerTool({
-    name: "pc_item_add",
+    name: "coc_pc_item_add",
     label: "添加物品",
-    description: "为调查员添加物品。count 支持整数(4)、分数(\"1/4\")、模糊量词(\"若干\")。同名物品自动合并。",
+    description: "为调查员添加物品。count 支持整数(4)、分数(\"1/4\")、模糊量词(\"若干\")。同名物品自动合并。notes 可选，用于记录物品来源/状态/重要性等元数据。",
     promptSnippet: "Add item to inventory",
     parameters: Type.Object({
       name: Type.String({ description: "调查员姓名" }),
       item: Type.String({ description: "物品名称" }),
       count: Type.Optional(Type.Union([Type.Integer(), Type.String()], { description: "数量（省略默认为1）" })),
+      notes: Type.Optional(Type.String({ description: "物品备注（来源/状态/重要性等）" })),
     }),
     execute: (_id, params, _signal, _onUpdate, ctx) => executePcItemAdd(params, ctx),
   });
 
   pi.registerTool({
-    name: "pc_item_rm",
+    name: "coc_pc_item_rm",
     label: "移除物品",
     description: "移除调查员的物品。count 省略则全部移除；指定则移除部分。",
     promptSnippet: "Remove item from inventory",
@@ -163,7 +188,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerTool({
-    name: "pc_item_mod",
+    name: "coc_pc_item_mod",
     label: "修改物品",
     description: "修改物品名称/状态/数量。常用于物品状态变更（如：旧印（未激活）→ 旧印（已激活））。count 省略则修改全部；指定则只修改部分数量并保留剩余旧物品。",
     promptSnippet: "Modify item",
@@ -179,7 +204,7 @@ export default function (pi: ExtensionAPI) {
   // ═══ NPC Tools ═══
 
   pi.registerTool({
-    name: "npc_create",
+    name: "coc_npc_create",
     label: "创建NPC",
     description: "创建新的NPC角色。",
     promptSnippet: "Create NPC",
@@ -195,7 +220,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerTool({
-    name: "npc_set",
+    name: "coc_npc_set",
     label: "修改NPC",
     description: "更新NPC的属性。有效域: role, location, attitude, status, notes。",
     promptSnippet: "Modify NPC",
@@ -210,7 +235,7 @@ export default function (pi: ExtensionAPI) {
   // ═══ Clue & Scene Tools ═══
 
   pi.registerTool({
-    name: "clue_add",
+    name: "coc_clue_add",
     label: "添加线索",
     description: "记录新发现的线索。location 默认为当前场景，npc 为提供线索的NPC。",
     promptSnippet: "Add clue",
@@ -224,13 +249,14 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerTool({
-    name: "scene_set",
+    name: "coc_scene_set",
     label: "设置场景",
-    description: "切换或更新当前场景的位置和时间。",
+    description: "切换或更新当前场景的位置、时间和环境描述。description 用于存放场景的环境叙事文本。",
     promptSnippet: "Set scene",
     parameters: Type.Object({
       location: Type.Optional(Type.String({ description: "新地点" })),
       time: Type.Optional(Type.String({ description: "新时间" })),
+      description: Type.Optional(Type.String({ description: "场景环境描述（可选）" })),
     }),
     execute: (_id, params, _signal, _onUpdate, ctx) => executeSceneSet(params, ctx),
   });
@@ -238,7 +264,7 @@ export default function (pi: ExtensionAPI) {
   // ═══ Combat Tools ═══
 
   pi.registerTool({
-    name: "combat_start",
+    name: "coc_combat_start",
     label: "开始战斗",
     description: "开始战斗回合。participants 为逗号分隔的参与者行动顺序（如 \"安娜,鮑勃,深潜者\"）。",
     promptSnippet: "Start combat",
@@ -249,7 +275,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerTool({
-    name: "combat_next",
+    name: "coc_combat_next",
     label: "下一行动",
     description: "当前行动者回合结束，轮到下一个参与者行动。回合轮完自动进入下一轮。",
     promptSnippet: "Next combat turn",
@@ -258,7 +284,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerTool({
-    name: "combat_end",
+    name: "coc_combat_end",
     label: "结束战斗",
     description: "结束当前战斗。",
     promptSnippet: "End combat",
@@ -271,7 +297,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "coc_log",
     label: "记录事件",
-    description: "记录一条关键事件（替换 STATUS.md 中的关键事件记录）。用于记录剧情转折、重要决策等影响故事走向的事件。",
+    description: "记录一条关键事件（替代 STATUS.md 中的关键事件记录）。用于记录剧情转折、重要决策等影响故事走向的事件。",
     promptSnippet: "Record key event",
     parameters: Type.Object({
       message: Type.String({ description: "事件描述" }),

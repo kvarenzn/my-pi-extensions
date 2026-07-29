@@ -4,12 +4,13 @@ import { EMPTY_STATE } from "./types";
 import { parseCount, addCounts, subCounts, countIsZero } from "./count";
 
 export const WRITE_TOOLS = new Set([
-  "pc_create", "pc_set", "pc_mod",
-  "pc_item_add", "pc_item_rm", "pc_item_mod",
-  "pc_status_add", "pc_status_rm",
-  "npc_create", "npc_set",
-  "clue_add", "scene_set", "coc_log",
-  "combat_start", "combat_next", "combat_end",
+  "coc_pc_create", "coc_pc_set", "coc_pc_mod",
+  "coc_pc_item_add", "coc_pc_item_rm", "coc_pc_item_mod",
+  "coc_pc_status_add", "coc_pc_status_rm",
+  "coc_npc_create", "coc_npc_set",
+  "coc_clue_add", "coc_scene_set", "coc_log",
+  "coc_combat_start", "coc_combat_next", "coc_combat_end",
+  "coc_session_set",
 ]);
 
 // ── Nested field helpers ──
@@ -78,7 +79,7 @@ export function rebuildState(ctx: ExtensionContext): GameState {
 
 function applyDelta(state: GameState, toolName: string, args: any): void {
   switch (toolName) {
-    case "pc_create": {
+    case "coc_pc_create": {
       const p = args as { name: string; hp?: number; san?: number; mp?: number; luck?: number; location?: string; status?: string[] };
       const player: Player = {
         name: p.name,
@@ -94,7 +95,7 @@ function applyDelta(state: GameState, toolName: string, args: any): void {
       break;
     }
 
-    case "pc_set": {
+    case "coc_pc_set": {
       const { name, field, value } = args as { name: string; field: string; value: any };
       const p = state.players[name];
       if (!p) return;
@@ -112,7 +113,7 @@ function applyDelta(state: GameState, toolName: string, args: any): void {
       break;
     }
 
-    case "pc_mod": {
+    case "coc_pc_mod": {
       const { name, field, delta } = args as { name: string; field: string; delta: number };
       const p = state.players[name];
       if (!p) return;
@@ -133,7 +134,7 @@ function applyDelta(state: GameState, toolName: string, args: any): void {
       break;
     }
 
-    case "pc_status_add": {
+    case "coc_pc_status_add": {
       const { name, status } = args as { name: string; status: string };
       const p = state.players[name];
       if (!p || p.status.includes(status)) return;
@@ -141,7 +142,7 @@ function applyDelta(state: GameState, toolName: string, args: any): void {
       break;
     }
 
-    case "pc_status_rm": {
+    case "coc_pc_status_rm": {
       const { name, status } = args as { name: string; status: string };
       const p = state.players[name];
       if (!p) return;
@@ -150,21 +151,24 @@ function applyDelta(state: GameState, toolName: string, args: any): void {
       break;
     }
 
-    case "pc_item_add": {
-      const { name, item, count } = args as { name: string; item: string; count?: number | string };
+    case "coc_pc_item_add": {
+      const { name, item, count, notes } = args as { name: string; item: string; count?: number | string; notes?: string };
       const p = state.players[name];
       if (!p) return;
       const addCount = parseCount(count);
       const idx = findItem(p.inventory, item);
       if (idx !== -1) {
         p.inventory[idx].count = addCounts(p.inventory[idx].count, addCount);
+        if (notes !== undefined) {
+          p.inventory[idx].notes = notes;
+        }
       } else {
-        p.inventory.push({ name: item, count: addCount });
+        p.inventory.push({ name: item, count: addCount, notes });
       }
       break;
     }
 
-    case "pc_item_rm": {
+    case "coc_pc_item_rm": {
       const { name, item, count } = args as { name: string; item: string; count?: number | string };
       const p = state.players[name];
       if (!p) return;
@@ -182,7 +186,7 @@ function applyDelta(state: GameState, toolName: string, args: any): void {
       break;
     }
 
-    case "pc_item_mod": {
+    case "coc_pc_item_mod": {
       const { name, item, newItem, count } = args as { name: string; item: string; newItem: string; count?: number | string };
       const p = state.players[name];
       if (!p) return;
@@ -212,13 +216,13 @@ function applyDelta(state: GameState, toolName: string, args: any): void {
       break;
     }
 
-    case "npc_create": {
+    case "coc_npc_create": {
       const n = args as { name: string; role?: string; location?: string; attitude?: string; status?: string[]; notes?: string };
       const npc: Npc = {
         name: n.name,
         role: n.role ?? "",
         location: n.location ?? "",
-        attitude: n.attitude ?? "中⽴",
+        attitude: n.attitude ?? "中立",
         status: n.status ?? [],
         notes: n.notes ?? "",
       };
@@ -226,7 +230,7 @@ function applyDelta(state: GameState, toolName: string, args: any): void {
       break;
     }
 
-    case "npc_set": {
+    case "coc_npc_set": {
       const { name, field, value } = args as { name: string; field: string; value: any };
       const npc = state.npcs[name];
       if (!npc) return;
@@ -238,7 +242,7 @@ function applyDelta(state: GameState, toolName: string, args: any): void {
       break;
     }
 
-    case "clue_add": {
+    case "coc_clue_add": {
       const c = args as { name: string; desc: string; location: string; npc: string | null };
       const clue: Clue = {
         name: c.name,
@@ -250,10 +254,18 @@ function applyDelta(state: GameState, toolName: string, args: any): void {
       break;
     }
 
-    case "scene_set": {
-      const s = args as { location?: string; time?: string };
+    case "coc_scene_set": {
+      const s = args as { location?: string; time?: string; description?: string };
       if (s.location !== undefined) state.scene.location = s.location;
       if (s.time !== undefined) state.scene.time = s.time;
+      if (s.description !== undefined) state.scene.description = s.description;
+      break;
+    }
+
+    case "coc_session_set": {
+      const s = args as { ruleMode?: string; scenarioName?: string };
+      if (s.ruleMode !== undefined) state.session.ruleMode = s.ruleMode as "" | "narrative" | "hybrid";
+      if (s.scenarioName !== undefined) state.session.scenarioName = s.scenarioName;
       break;
     }
 
@@ -262,6 +274,8 @@ function applyDelta(state: GameState, toolName: string, args: any): void {
       state.log.push({ timestamp: new Date().toISOString(), message });
       break;
     }
+
+    case "coc_combat_start": {
       const c = args as { participants: string };
       const participants = c.participants.split(",").map(s => s.trim()).filter(Boolean);
       if (participants.length >= 2) {
@@ -270,7 +284,7 @@ function applyDelta(state: GameState, toolName: string, args: any): void {
       break;
     }
 
-    case "combat_next": {
+    case "coc_combat_next": {
       if (!state.combat) return;
       state.combat.currentIndex++;
       if (state.combat.currentIndex >= state.combat.participants.length) {
@@ -280,7 +294,7 @@ function applyDelta(state: GameState, toolName: string, args: any): void {
       break;
     }
 
-    case "combat_end": {
+    case "coc_combat_end": {
       state.combat = null;
       break;
     }

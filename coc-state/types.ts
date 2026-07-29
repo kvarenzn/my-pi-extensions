@@ -7,6 +7,7 @@ export interface Count {
 export interface InventoryItem {
   name: string;
   count: Count;
+  notes?: string;
 }
 
 export interface PlayerSkills {
@@ -53,6 +54,7 @@ export interface Clue {
 export interface Scene {
   location: string;
   time: string;
+  description: string;
 }
 
 export interface Combat {
@@ -66,6 +68,11 @@ export interface LogEntry {
   message: string;
 }
 
+export interface SessionMeta {
+  ruleMode: "" | "narrative" | "hybrid";
+  scenarioName: string;
+}
+
 export interface GameState {
   players: Record<string, Player>;
   npcs: Record<string, Npc>;
@@ -73,15 +80,17 @@ export interface GameState {
   scene: Scene;
   combat: Combat | null;
   log: LogEntry[];
+  session: SessionMeta;
 }
 
 export const EMPTY_STATE: GameState = {
   players: {},
   npcs: {},
   clues: [],
-  scene: { location: "", time: "" },
+  scene: { location: "", time: "", description: "" },
   combat: null,
   log: [],
+  session: { ruleMode: "", scenarioName: "" },
 };
 
 export const NUMERIC_FIELDS = new Set([
