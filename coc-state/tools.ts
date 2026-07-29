@@ -257,7 +257,7 @@ export async function executePcSet(
     const text = `${params.name} 状态 → ${player.status.join(", ") || "(无)"}`;
     return {
       content: [{ type: "text" as const, text }],
-      details: { arguments: params, result: { player, oldStatus: oldPlayer.status, newStatus: player.status } },
+      details: { arguments: params, result: { field, value: player.status } },
     };
   } else if (field === "inventory") {
     throw new Error(`"inventory"请使用 pc_item_add / pc_item_rm 操作`);
@@ -282,7 +282,7 @@ export async function executePcSet(
 
   return {
     content: [{ type: "text" as const, text: `${params.name} ${field}: ${oldValue} → ${newValue}` }],
-    details: { arguments: params, result: { player, oldValue, newValue } },
+    details: { arguments: params, result: { field, value } },
   };
 }
 
@@ -324,7 +324,7 @@ export async function executePcMod(
 
   return {
     content: [{ type: "text" as const, text: `${params.name} ${field}: ${oldValue} → ${newValue} (${delta >= 0 ? "+" : ""}${delta})` }],
-    details: { arguments: params, result: { player, delta, oldValue, newValue } },
+    details: { arguments: params, result: { field, delta } },
   };
 }
 
@@ -342,7 +342,7 @@ export async function executePcStatusAdd(
 
   return {
     content: [{ type: "text" as const, text: `${params.name} 添加状态: ${params.status}（当前: ${player.status.join(", ")}）` }],
-    details: { arguments: params, result: { player } },
+    details: { arguments: params, result: { status: params.status } },
   };
 }
 
@@ -362,7 +362,7 @@ export async function executePcStatusRm(
 
   return {
     content: [{ type: "text" as const, text: `${params.name} 移除状态: ${params.status}（当前: ${player.status.join(", ") || "(无)"}）` }],
-    details: { arguments: params, result: { player } },
+    details: { arguments: params, result: { status: params.status } },
   };
 }
 
@@ -388,7 +388,7 @@ export async function executePcItemAdd(
   const display = formatInventory(player.inventory);
   return {
     content: [{ type: "text" as const, text: `${params.name} 获得: ${params.item}${params.count !== undefined ? " x" + formatCount(addCount) : ""}。物品: ${display}` }],
-    details: { arguments: params, result: { player, inventory: player.inventory } },
+    details: { arguments: params, result: { item: params.item, count: params.count } },
   };
 }
 
@@ -419,7 +419,7 @@ export async function executePcItemRm(
   const display = formatInventory(player.inventory);
   return {
     content: [{ type: "text" as const, text: `${params.name} 失去: ${params.item}${params.count !== undefined ? " x" + formatCount(parseCount(params.count)) : ""}。物品: ${display}` }],
-    details: { arguments: params, result: { player, inventory: player.inventory } },
+    details: { arguments: params, result: { item: params.item, count: params.count } },
   };
 }
 
@@ -461,7 +461,7 @@ export async function executePcItemMod(
   const display = formatInventory(player.inventory);
   return {
     content: [{ type: "text" as const, text: `${params.name} 物品变更: ${params.item} → ${params.newItem}${modCount ? " x" + formatCount(modCount) : ""}。物品: ${display}` }],
-    details: { arguments: params, result: { player, inventory: player.inventory } },
+    details: { arguments: params, result: { item: params.item, newItem: params.newItem, count: params.count } },
   };
 }
 
@@ -510,7 +510,7 @@ export async function executeNpcSet(
 
   return {
     content: [{ type: "text" as const, text: `${params.name} ${params.field}: ${(oldNpc as any)[params.field]} → ${params.value}` }],
-    details: { arguments: params, result: { npc, oldValue: (oldNpc as any)[params.field], newValue: params.value } },
+    details: { arguments: params, result: { field: params.field, value: params.value } },
   };
 }
 
@@ -528,7 +528,7 @@ export async function executeClueAdd(
 
   return {
     content: [{ type: "text" as const, text: `新线索: ${params.name}${params.location ? " [" + params.location + "]" : ""}` }],
-    details: { arguments: params, result: { clues } },
+    details: { arguments: params, result: { name: params.name, desc: params.desc, location: params.location ?? state.scene.location, npc: params.npc ?? null } },
   };
 }
 
@@ -543,7 +543,7 @@ export async function executeSceneSet(
 
   return {
     content: [{ type: "text" as const, text: `场景更新 → 位置: ${scene.location || "未知"} | 时间: ${scene.time || "未知"}` }],
-    details: { arguments: params, result: { scene } },
+    details: { arguments: params, result: { location: params.location, time: params.time } },
   };
 }
 
