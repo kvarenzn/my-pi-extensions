@@ -41,7 +41,9 @@ function applyResult(state: GameState, toolName: string, details: any): void {
   switch (toolName) {
     case "pc_create": {
       const p = details.result.player as Player;
-      state.players[p.name] = p;
+      if (!state.players[p.name]) {
+        state.players[p.name] = p;
+      }
       break;
     }
     case "pc_set":

@@ -266,8 +266,13 @@ export default function (pi: ExtensionAPI) {
 
   // ═══ Session Event Handlers (Snapshots) ═══
 
-  pi.on("session_start", () => {
-    pi.appendEntry("coc-snapshot", {});
+  pi.on("session_start", (_event, ctx) => {
+    const hasSnapshot = ctx.sessionManager.getEntries().some(
+      e => (e as any).type === "custom" && (e as any).customType === "coc-snapshot"
+    );
+    if (!hasSnapshot) {
+      pi.appendEntry("coc-snapshot", {});
+    }
   });
 
   pi.on("session_before_compact", async (event, ctx) => {
