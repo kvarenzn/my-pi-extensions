@@ -1,7 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { EMPTY_STATE, type GameState } from "./types";
-import { rebuildState, WRITE_TOOLS } from "./rebuild";
+import { rebuildState } from "./rebuild";
 import {
   executePcGet, executeNpcGet, executeClueList, executeSceneGet, executeCombatStatus,
   executePcCreate, executePcSet, executePcMod, executePcStatusAdd, executePcStatusRm,
@@ -263,5 +262,17 @@ export default function (pi: ExtensionAPI) {
     promptSnippet: "End combat",
     parameters: Type.Object({}),
     execute: (_id, params, _signal, _onUpdate, ctx) => executeCombatEnd(params, ctx),
+  });
+
+  // ═══ Session Event Handlers (Snapshots) ═══
+
+  pi.on("session_start", () => {
+    pi.appendEntry("coc-snapshot", {});
+  });
+
+  pi.on("session_before_compact", async (event, ctx) => {
+    const state = rebuildState(ctx);
+    pi.appendEntry("coc-snapshot", state);
+    return undefined;
   });
 }
