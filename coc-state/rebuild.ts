@@ -1,7 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { GameState, Player } from "./types";
 import { EMPTY_STATE } from "./types";
-import { parseCount, addCounts, subCounts, countIsZero } from "./count";
 
 export const WRITE_TOOLS = new Set([
   "pc_create", "pc_set", "pc_mod",
@@ -47,45 +46,47 @@ function applyResult(state: GameState, toolName: string, details: any): void {
       break;
     }
     case "pc_set":
-    case "pc_mod": {
-      const r = details.result;
-      if (r.player) state.players[r.player.name] = r.player;
-      break;
-    }
+    case "pc_mod":
     case "pc_item_add":
     case "pc_item_rm":
-    case "pc_item_mod": {
-      const r = details.result;
-      if (r.player) state.players[r.player.name] = r.player;
-      break;
-    }
+    case "pc_item_mod":
     case "pc_status_add":
     case "pc_status_rm": {
       const r = details.result;
-      if (r.player) state.players[r.player.name] = r.player;
+      if (r.player && !state.players[r.player.name]) {
+        state.players[r.player.name] = r.player;
+      }
       break;
     }
     case "npc_create":
     case "npc_set": {
       const r = details.result;
-      if (r.npc) state.npcs[r.npc.name] = r.npc;
+      if (r.npc && !state.npcs[r.npc.name]) {
+        state.npcs[r.npc.name] = r.npc;
+      }
       break;
     }
     case "clue_add": {
       const r = details.result;
-      if (r.clues) state.clues = r.clues;
+      if (r.clues && state.clues.length === 0) {
+        state.clues = r.clues;
+      }
       break;
     }
     case "scene_set": {
       const r = details.result;
-      if (r.scene) state.scene = r.scene;
+      if (r.scene && state.scene.location === "" && state.scene.time === "") {
+        state.scene = r.scene;
+      }
       break;
     }
     case "combat_start":
     case "combat_next":
     case "combat_end": {
       const r = details.result;
-      if (r.combat !== undefined) state.combat = r.combat;
+      if (r.combat !== undefined && state.combat === null) {
+        state.combat = r.combat;
+      }
       break;
     }
   }
