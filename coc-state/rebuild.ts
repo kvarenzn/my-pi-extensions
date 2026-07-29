@@ -12,19 +12,25 @@ export const WRITE_TOOLS = new Set([
 ]);
 
 export function rebuildState(ctx: ExtensionContext): GameState {
-  const state: GameState = structuredClone(EMPTY_STATE);
   const entries = ctx.sessionManager.getEntries();
+
+  let start = 0;
+  let state: GameState = structuredClone(EMPTY_STATE);
 
   for (let i = entries.length - 1; i >= 0; i--) {
     const entry = entries[i] as any;
-
     if (entry.type === "custom" && entry.customType === "coc-snapshot") {
-      if (entry.data && Object.keys(entry.data).length > 0) {
-        return entry.data as GameState;
+      const data = entry.data as GameState | undefined;
+      if (data && Object.keys(data).length > 0) {
+        state = structuredClone(data);
       }
+      start = i + 1;
       break;
     }
+  }
 
+  for (let i = start; i < entries.length; i++) {
+    const entry = entries[i] as any;
     if (entry.type === "message" && entry.message?.role === "toolResult") {
       const { toolName, details, isError } = entry.message;
       if (!WRITE_TOOLS.has(toolName) || isError) continue;
@@ -40,9 +46,7 @@ function applyResult(state: GameState, toolName: string, details: any): void {
   switch (toolName) {
     case "pc_create": {
       const p = details.result.player as Player;
-      if (!state.players[p.name]) {
-        state.players[p.name] = p;
-      }
+      state.players[p.name] = p;
       break;
     }
     case "pc_set":
@@ -53,40 +57,30 @@ function applyResult(state: GameState, toolName: string, details: any): void {
     case "pc_status_add":
     case "pc_status_rm": {
       const r = details.result;
-      if (r.player && !state.players[r.player.name]) {
-        state.players[r.player.name] = r.player;
-      }
+      if (r.player) state.players[r.player.name] = r.player;
       break;
     }
     case "npc_create":
     case "npc_set": {
       const r = details.result;
-      if (r.npc && !state.npcs[r.npc.name]) {
-        state.npcs[r.npc.name] = r.npc;
-      }
+      if (r.npc) state.npcs[r.npc.name] = r.npc;
       break;
     }
     case "clue_add": {
       const r = details.result;
-      if (r.clues && state.clues.length === 0) {
-        state.clues = r.clues;
-      }
+      if (r.clues) state.clues = r.clues;
       break;
     }
     case "scene_set": {
       const r = details.result;
-      if (r.scene && state.scene.location === "" && state.scene.time === "") {
-        state.scene = r.scene;
-      }
+      if (r.scene) state.scene = r.scene;
       break;
     }
     case "combat_start":
     case "combat_next":
     case "combat_end": {
       const r = details.result;
-      if (r.combat !== undefined && state.combat === null) {
-        state.combat = r.combat;
-      }
+      if (r.combat !== undefined) state.combat = r.combat;
       break;
     }
   }
