@@ -264,20 +264,34 @@ export default function (pi: ExtensionAPI) {
     execute: (_id, params, _signal, _onUpdate, ctx) => executeCombatEnd(params, ctx),
   });
 
-  // ═══ Session Event Handlers (Snapshots) ═══
+  // ═══ Snapshot Tool ═══
 
-  pi.on("session_start", (_event, ctx) => {
-    const hasSnapshot = ctx.sessionManager.getEntries().some(
-      e => (e as any).type === "custom" && (e as any).customType === "coc-snapshot"
-    );
-    if (!hasSnapshot) {
-      pi.appendEntry("coc-snapshot", {});
-    }
+  pi.registerTool({
+    name: "coc_snapshot",
+    label: "保存快照",
+    description: "将当前游戏状态保存为快照（coc-snapshot）。在跑团开始时调用一次，状态查询工具即可正常工作。也可在重要剧情节点调用以创建回档点。",
+    promptSnippet: "Save game state snapshot",
+    parameters: Type.Object({}),
+    execute: async (_id, _params, _signal, _onUpdate, ctx) => {
+      const state = rebuildState(ctx);
+      ctx.sessionManager.appendCustomEntry("coc-snapshot", state);
+      const pcCount = Object.keys(state.players).length;
+      const clueCount = state.clues.length;
+      return {
+        content: [{ type: "text" as const, text: `快照已保存。（${pcCount} 名调查员，${clueCount} 条线索）` }],
+        details: { arguments: {}, result: { pcCount, clueCount } },
+      };
+    },
   });
+
+  // ═══ Session Event Handlers ═══
 
   pi.on("session_before_compact", async (event, ctx) => {
     const state = rebuildState(ctx);
-    pi.appendEntry("coc-snapshot", state);
+    // Only snapshot if there's actual game state
+    if (Object.keys(state.players).length > 0 || state.clues.length > 0 || Object.keys(state.npcs).length > 0) {
+      pi.appendEntry("coc-snapshot", state);
+    }
     return undefined;
   });
 }
