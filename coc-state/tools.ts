@@ -1,5 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { GameState, Player, Npc, InventoryItem, Count } from "./types";
+import type { GameState, Player, Npc, InventoryItem, Count, LogEntry } from "./types";
 import { NUMERIC_FIELDS } from "./types";
 import { rebuildState } from "./rebuild";
 import { parseCount, addCounts, subCounts, countIsZero, formatCount } from "./count";
@@ -118,7 +118,7 @@ export async function executeNpcGet(
     }
     const text = [
       `${npc.name} | ${npc.role || "未知身份"} | 位置: ${npc.location || "未知"}`,
-      `  态度: ${npc.attitude || "中立"}`,
+      `  态度: ${npc.attitude || "中立"}${npc.status.length > 0 ? ` | 状态: ${npc.status.join(", ")}` : ""}`,
       npc.notes ? `  备注: ${npc.notes}` : "",
     ].filter(Boolean).join("\n");
     return {
@@ -135,7 +135,7 @@ export async function executeNpcGet(
     };
   }
   const text = npcs.map(n =>
-    `${n.name} (${n.role || "?"}) - ${n.location || "?"} [${n.attitude || "中立"}]`
+    `${n.name} (${n.role || "?"}) - ${n.location || "?"} [${n.attitude || "中立"}]${n.status.length > 0 ? ` {${n.status.join(", ")}}` : ""}`
   ).join("\n");
   return {
     content: [{ type: "text" as const, text }],
@@ -468,7 +468,7 @@ export async function executePcItemMod(
 // ── NPC, Clue, Scene Write Tools ──
 
 export async function executeNpcCreate(
-  params: { name: string; role?: string; location?: string; attitude?: string; notes?: string },
+  params: { name: string; role?: string; location?: string; attitude?: string; status?: string[]; notes?: string },
   ctx: ExtensionContext
 ) {
   const state = rebuildState(ctx);
@@ -481,6 +481,7 @@ export async function executeNpcCreate(
     role: params.role ?? "",
     location: params.location ?? "",
     attitude: params.attitude ?? "中立",
+    status: params.status ?? [],
     notes: params.notes ?? "",
   };
 
@@ -491,7 +492,7 @@ export async function executeNpcCreate(
 }
 
 export async function executeNpcSet(
-  params: { name: string; field: string; value: string },
+  params: { name: string; field: string; value: any },
   ctx: ExtensionContext
 ) {
   const state = rebuildState(ctx);
@@ -501,15 +502,20 @@ export async function executeNpcSet(
     throw new Error(`未找到NPC"${params.name}"。已知NPC: ${names}\n如需创建NPC请使用 npc_create`);
   }
 
-  const npc = structuredClone(oldNpc);
-  const validFields = ["role", "location", "attitude", "notes"];
+  const validFields = ["role", "location", "attitude", "status", "notes"];
   if (!validFields.includes(params.field)) {
     throw new Error(`"${params.field}"不是NPC的有效域。有效域: ${validFields.join(", ")}`);
   }
-  (npc as any)[params.field] = params.value;
+
+  const npc = structuredClone(oldNpc);
+  if (params.field === "status") {
+    npc.status = Array.isArray(params.value) ? params.value : [];
+  } else {
+    (npc as any)[params.field] = params.value;
+  }
 
   return {
-    content: [{ type: "text" as const, text: `${params.name} ${params.field}: ${(oldNpc as any)[params.field]} → ${params.value}` }],
+    content: [{ type: "text" as const, text: `${params.name} ${params.field}: ${JSON.stringify((oldNpc as any)[params.field])} → ${JSON.stringify(params.value)}` }],
     details: { arguments: params, result: { field: params.field, value: params.value } },
   };
 }
@@ -610,5 +616,42 @@ export async function executeCombatEnd(
   return {
     content: [{ type: "text" as const, text: "战斗结束。" }],
     details: { arguments: {}, result: { combat: null } },
+  };
+}
+
+// ── Log Tools ──
+
+export async function executeCocLog(
+  params: { message: string },
+  ctx: ExtensionContext
+) {
+  const state = rebuildState(ctx);
+  const entry: LogEntry = { timestamp: new Date().toISOString(), message: params.message };
+  state.log.push(entry);
+
+  return {
+    content: [{ type: "text" as const, text: `事件已记录: ${params.message}` }],
+    details: { arguments: params, result: { message: params.message } },
+  };
+}
+
+export async function executeCocLogList(
+  _params: {},
+  ctx: ExtensionContext
+) {
+  const state = rebuildState(ctx);
+  if (state.log.length === 0) {
+    return {
+      content: [{ type: "text" as const, text: "暂无事件记录。" }],
+      details: { arguments: {}, result: { log: [] } },
+    };
+  }
+  const text = state.log.map((e, i) => {
+    const ts = new Date(e.timestamp).toLocaleString("zh-CN", { hour12: false });
+    return `${i + 1}. [${ts}] ${e.message}`;
+  }).join("\n");
+  return {
+    content: [{ type: "text" as const, text }],
+    details: { arguments: {}, result: { log: state.log } },
   };
 }

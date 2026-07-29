@@ -39,6 +39,7 @@ export interface Npc {
   role: string;
   location: string;
   attitude: string;
+  status: string[];
   notes: string;
 }
 
@@ -60,12 +61,18 @@ export interface Combat {
   round: number;
 }
 
+export interface LogEntry {
+  timestamp: string;
+  message: string;
+}
+
 export interface GameState {
   players: Record<string, Player>;
   npcs: Record<string, Npc>;
   clues: Clue[];
   scene: Scene;
   combat: Combat | null;
+  log: LogEntry[];
 }
 
 export const EMPTY_STATE: GameState = {
@@ -74,6 +81,7 @@ export const EMPTY_STATE: GameState = {
   clues: [],
   scene: { location: "", time: "" },
   combat: null,
+  log: [],
 };
 
 export const NUMERIC_FIELDS = new Set([

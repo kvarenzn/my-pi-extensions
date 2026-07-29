@@ -7,6 +7,7 @@ import {
   executePcItemAdd, executePcItemRm, executePcItemMod,
   executeNpcCreate, executeNpcSet, executeClueAdd, executeSceneSet,
   executeCombatStart, executeCombatNext, executeCombatEnd,
+  executeCocLog, executeCocLogList,
 } from "./tools";
 
 export default function (pi: ExtensionAPI) {
@@ -187,6 +188,7 @@ export default function (pi: ExtensionAPI) {
       role: Type.Optional(Type.String({ description: "身份/职业" })),
       location: Type.Optional(Type.String({ description: "所在地点" })),
       attitude: Type.Optional(Type.String({ description: "态度（默认: 中立）" })),
+      status: Type.Optional(Type.Array(Type.String(), { description: "初始状态列表" })),
       notes: Type.Optional(Type.String({ description: "备注" })),
     }),
     execute: (_id, params, _signal, _onUpdate, ctx) => executeNpcCreate(params, ctx),
@@ -195,12 +197,12 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "npc_set",
     label: "修改NPC",
-    description: "更新NPC的属性。有效域: role, location, attitude, notes。",
+    description: "更新NPC的属性。有效域: role, location, attitude, status, notes。",
     promptSnippet: "Modify NPC",
     parameters: Type.Object({
       name: Type.String({ description: "NPC姓名" }),
-      field: Type.String({ description: "域名称（role/location/attitude/notes）" }),
-      value: Type.String({ description: "新值" }),
+      field: Type.String({ description: "域名称（role/location/attitude/status/notes）" }),
+      value: Type.Union([Type.String(), Type.Array(Type.String())]),
     }),
     execute: (_id, params, _signal, _onUpdate, ctx) => executeNpcSet(params, ctx),
   });
@@ -262,6 +264,28 @@ export default function (pi: ExtensionAPI) {
     promptSnippet: "End combat",
     parameters: Type.Object({}),
     execute: (_id, params, _signal, _onUpdate, ctx) => executeCombatEnd(params, ctx),
+  });
+
+  // ═══ Log Tools ═══
+
+  pi.registerTool({
+    name: "coc_log",
+    label: "记录事件",
+    description: "记录一条关键事件（替换 STATUS.md 中的关键事件记录）。用于记录剧情转折、重要决策等影响故事走向的事件。",
+    promptSnippet: "Record key event",
+    parameters: Type.Object({
+      message: Type.String({ description: "事件描述" }),
+    }),
+    execute: (_id, params, _signal, _onUpdate, ctx) => executeCocLog(params, ctx),
+  });
+
+  pi.registerTool({
+    name: "coc_log_list",
+    label: "列出事件记录",
+    description: "列出所有已记录的关键事件。",
+    promptSnippet: "List key events",
+    parameters: Type.Object({}),
+    execute: (_id, params, _signal, _onUpdate, ctx) => executeCocLogList(params, ctx),
   });
 
   // ═══ Snapshot Tool ═══

@@ -8,7 +8,7 @@ export const WRITE_TOOLS = new Set([
   "pc_item_add", "pc_item_rm", "pc_item_mod",
   "pc_status_add", "pc_status_rm",
   "npc_create", "npc_set",
-  "clue_add", "scene_set",
+  "clue_add", "scene_set", "coc_log",
   "combat_start", "combat_next", "combat_end",
 ]);
 
@@ -213,12 +213,13 @@ function applyDelta(state: GameState, toolName: string, args: any): void {
     }
 
     case "npc_create": {
-      const n = args as { name: string; role?: string; location?: string; attitude?: string; notes?: string };
+      const n = args as { name: string; role?: string; location?: string; attitude?: string; status?: string[]; notes?: string };
       const npc: Npc = {
         name: n.name,
         role: n.role ?? "",
         location: n.location ?? "",
-        attitude: n.attitude ?? "中立",
+        attitude: n.attitude ?? "中⽴",
+        status: n.status ?? [],
         notes: n.notes ?? "",
       };
       state.npcs[n.name] = npc;
@@ -226,10 +227,14 @@ function applyDelta(state: GameState, toolName: string, args: any): void {
     }
 
     case "npc_set": {
-      const { name, field, value } = args as { name: string; field: string; value: string };
+      const { name, field, value } = args as { name: string; field: string; value: any };
       const npc = state.npcs[name];
       if (!npc) return;
-      (npc as any)[field] = value;
+      if (field === "status") {
+        npc.status = Array.isArray(value) ? value : [];
+      } else {
+        (npc as any)[field] = value;
+      }
       break;
     }
 
@@ -252,7 +257,11 @@ function applyDelta(state: GameState, toolName: string, args: any): void {
       break;
     }
 
-    case "combat_start": {
+    case "coc_log": {
+      const { message } = args as { message: string };
+      state.log.push({ timestamp: new Date().toISOString(), message });
+      break;
+    }
       const c = args as { participants: string };
       const participants = c.participants.split(",").map(s => s.trim()).filter(Boolean);
       if (participants.length >= 2) {
