@@ -33,6 +33,10 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { readFile, writeFile, stat, readdir, mkdir } from "node:fs/promises";
 import { isAbsolute, resolve, dirname } from "node:path";
 
+const PROVIDER = "deepseek";
+const MODEL = "deepseek-v4-pro";
+const MODEL_FULL_NAME = `${PROVIDER}/${MODEL}`;
+
 // ---------------------------------------------------------------------------
 // DSH 极简模式常量（逐字复刻自 deepseek-harness）
 // ---------------------------------------------------------------------------
@@ -48,7 +52,8 @@ const DSH_BASH_DESCRIPTION = `Run commands in a bash shell
 * Please avoid commands that may produce a very large amount of output.
 * Please run long lived commands in the background, e.g. 'sleep 10 &' or start a server in the background.`;
 
-const DSH_EDITOR_DESCRIPTION = `Custom editing tool for viewing, creating and editing files
+const DSH_EDITOR_DESCRIPTION =
+  `Custom editing tool for viewing, creating and editing files
 * State is persistent across command calls and discussions with the user
 * If \`path\` is a file, \`view\` displays the result of applying \`cat -n\`. If \`path\` is a directory, \`view\` lists non-hidden files and directories up to 2 levels deep
 * The \`create\` command cannot be used if the specified \`path\` already exists as a file
@@ -59,14 +64,17 @@ Notes for using the \`str_replace\` command:
 * If the \`old_str\` parameter is not unique in the file, the replacement will not be performed. Make sure to include enough context in \`old_str\` to make it unique
 * The \`new_str\` parameter should contain the edited lines that should replace the \`old_str\``.trim();
 
-const TRUNCATED_MESSAGE = "<response clipped><NOTE>To save on context only part of this file has been shown to you. You should retry this tool after you have searched inside the file with `grep -n` in order to find the line numbers of what you are looking for.</NOTE>";
+const TRUNCATED_MESSAGE =
+  "<response clipped><NOTE>To save on context only part of this file has been shown to you. You should retry this tool after you have searched inside the file with `grep -n` in order to find the line numbers of what you are looking for.</NOTE>";
 
 const MAX_OUTPUT_CHARS = 16_000; // DSH 极简模式默认 maxOutputChars
 const BASH_TIMEOUT_MS = 300_000; // DSH 极简模式 timeoutMs: 300000
 
 // 以下三组文案与原生 DSH 的 tool-bash-persistent 逐字一致：
-const SHELL_RESET_MESSAGE = "The persistent bash shell was reset; the next bash call starts from the workspace with a fresh current directory and environment.";
-const LOST_PREFIX_MESSAGE = "<response clipped><NOTE>The beginning of this command output was dropped by the terminal scrollback limit. The following text is the earliest retained output.</NOTE>\n";
+const SHELL_RESET_MESSAGE =
+  "The persistent bash shell was reset; the next bash call starts from the workspace with a fresh current directory and environment.";
+const LOST_PREFIX_MESSAGE =
+  "<response clipped><NOTE>The beginning of this command output was dropped by the terminal scrollback limit. The following text is the earliest retained output.</NOTE>\n";
 const TIMEOUT_MESSAGE_PREFIX = (seconds: number): string =>
   `Your command timed out after ${seconds} seconds or experienced an OOM error. Below is partial output:`;
 
@@ -76,35 +84,56 @@ const TIMEOUT_MESSAGE_PREFIX = (seconds: number): string =>
 
 const DSH_BASH_SCHEMA = Type.Object({
   command: Type.String({
-    description: "The bash command to run. Relative path is preferred in the command.",
+    description:
+      "The bash command to run. Relative path is preferred in the command.",
   }),
 });
 
 const PI_BASH_SCHEMA = Type.Object({
   command: Type.String({ description: "Bash command to execute" }),
-  timeout: Type.Optional(Type.Number({ description: "Timeout in seconds (optional, no default timeout)" })),
+  timeout: Type.Optional(
+    Type.Number({
+      description: "Timeout in seconds (optional, no default timeout)",
+    }),
+  ),
 });
 
 const STR_REPLACE_SCHEMA = Type.Object({
   command: StringEnum(["view", "create", "str_replace", "insert"] as const),
   path: Type.String({
-    description: "Absolute path to file or directory, e.g. `/repo/file.py` or `/repo`.",
+    description:
+      "Absolute path to file or directory, e.g. `/repo/file.py` or `/repo`.",
   }),
-  file_text: Type.Optional(Type.String({
-    description: "Required parameter of `create` command, with the content of the file to be created.",
-  })),
-  insert_line: Type.Optional(Type.Integer({
-    description: "Required parameter of `insert` command. The `new_str` will be inserted AFTER the line `insert_line` of `path`.",
-  })),
-  new_str: Type.Optional(Type.String({
-    description: "Optional parameter of `str_replace` command containing the new string (if not given, no string will be added). Required parameter of `insert` command containing the string to insert.",
-  })),
-  old_str: Type.Optional(Type.String({
-    description: "Required parameter of `str_replace` command containing the string in `path` to replace.",
-  })),
-  view_range: Type.Optional(Type.Array(Type.Integer(), {
-    description: "Optional parameter of `view` command when `path` points to a file. If none is given, the full file is shown. If provided, the file will be shown in the indicated line number range, e.g. [11, 12] will show lines 11 and 12. Indexing at 1 to start. Setting `[start_line, -1]` shows all lines from `start_line` to the end of the file.",
-  })),
+  file_text: Type.Optional(
+    Type.String({
+      description:
+        "Required parameter of `create` command, with the content of the file to be created.",
+    }),
+  ),
+  insert_line: Type.Optional(
+    Type.Integer({
+      description:
+        "Required parameter of `insert` command. The `new_str` will be inserted AFTER the line `insert_line` of `path`.",
+    }),
+  ),
+  new_str: Type.Optional(
+    Type.String({
+      description:
+        "Optional parameter of `str_replace` command containing the new string (if not given, no string will be added). Required parameter of `insert` command containing the string to insert.",
+    }),
+  ),
+  old_str: Type.Optional(
+    Type.String({
+      description:
+        "Required parameter of `str_replace` command containing the string in `path` to replace.",
+    }),
+  ),
+  view_range: Type.Optional(
+    Type.Array(Type.Integer(), {
+      description:
+        "Optional parameter of `view` command when `path` points to a file. If none is given, the full file is shown. If provided, the file will be shown in the indicated line number range, e.g. [11, 12] will show lines 11 and 12. Indexing at 1 to start. Setting `[start_line, -1]` shows all lines from `start_line` to the end of the file.",
+    }),
+  ),
 });
 type StrReplaceParams = Static<typeof STR_REPLACE_SCHEMA>;
 
@@ -122,7 +151,8 @@ const localBashOps = createLocalBashOperations();
 
 function killShellGroup(handle: ShellHandle): void {
   try {
-    if (handle.child.pid !== undefined) process.kill(-handle.child.pid, "SIGKILL");
+    if (handle.child.pid !== undefined)
+      process.kill(-handle.child.pid, "SIGKILL");
   } catch {
     try {
       handle.child.kill("SIGKILL");
@@ -134,7 +164,11 @@ function killShellGroup(handle: ShellHandle): void {
 
 function getShell(sessionId: string, cwd: string): ShellHandle {
   let handle = shells.get(sessionId);
-  if (handle === undefined || handle.child.exitCode !== null || handle.child.signalCode !== null) {
+  if (
+    handle === undefined ||
+    handle.child.exitCode !== null ||
+    handle.child.signalCode !== null
+  ) {
     const child = spawn("bash", ["--noprofile", "--norc"], {
       cwd,
       detached: process.platform !== "win32",
@@ -147,7 +181,11 @@ function getShell(sessionId: string, cwd: string): ShellHandle {
   return handle;
 }
 
-function maybeTruncateBash(content: string, maxOutputChars: number, incomplete: boolean): string {
+function maybeTruncateBash(
+  content: string,
+  maxOutputChars: number,
+  incomplete: boolean,
+): string {
   // 与原生 maybeTruncate 一致：保留头部；incomplete 时即使未超限也追加截断标记
   if (content.length <= maxOutputChars && !incomplete) return content;
   return content.length <= maxOutputChars
@@ -155,15 +193,23 @@ function maybeTruncateBash(content: string, maxOutputChars: number, incomplete: 
     : content.slice(0, maxOutputChars) + TRUNCATED_MESSAGE;
 }
 
-function renderCapturedBash(text: string, lostPrefix: boolean, exitCode?: number): string {
+function renderCapturedBash(
+  text: string,
+  lostPrefix: boolean,
+  exitCode?: number,
+): string {
   const rendered = maybeTruncateBash(text, MAX_OUTPUT_CHARS, lostPrefix);
-  const withPrefix = lostPrefix && text.length > 0
-    ? LOST_PREFIX_MESSAGE + rendered
-    : rendered;
-  const marker = exitCode !== undefined && exitCode !== 0
-    ? `[exit code: ${exitCode}]`
-    : undefined;
-  return marker === undefined ? withPrefix : withPrefix.length === 0 ? marker : `${withPrefix}\n${marker}`;
+  const withPrefix =
+    lostPrefix && text.length > 0 ? LOST_PREFIX_MESSAGE + rendered : rendered;
+  const marker =
+    exitCode !== undefined && exitCode !== 0
+      ? `[exit code: ${exitCode}]`
+      : undefined;
+  return marker === undefined
+    ? withPrefix
+    : withPrefix.length === 0
+      ? marker
+      : `${withPrefix}\n${marker}`;
 }
 
 export async function execInShell(
@@ -182,10 +228,13 @@ export async function execInShell(
     let out = "";
     let lostPrefix = false; // 滚动缓冲截断过 → 头部输出已丢失
     let timedOut = false;
-    const exitState: { exited: { code: number | null; signal: NodeJS.Signals | null } | null } = { exited: null };
+    const exitState: {
+      exited: { code: number | null; signal: NodeJS.Signals | null } | null;
+    } = { exited: null };
     const onData = (data: Buffer): void => {
       out += data.toString("utf8");
-      if (out.length > 1_000_000) { // 防爆内存；与原生 scrollback 限制语义一致
+      if (out.length > 1_000_000) {
+        // 防爆内存；与原生 scrollback 限制语义一致
         out = out.slice(out.length - 1_000_000);
         lostPrefix = true;
       }
@@ -211,7 +260,8 @@ export async function execInShell(
     else signal?.addEventListener("abort", onAbort, { once: true });
 
     // 超时/退出路径：去掉尾部可能残留的半截哨兵（哨兵未完整打印时）
-    const partial = (): string => out.replace(new RegExp(`\\n?__DSH_END_d${seq}__[\\s\\S]*$`), "");
+    const partial = (): string =>
+      out.replace(new RegExp(`\\n?__DSH_END_d${seq}__[\\s\\S]*$`), "");
 
     try {
       while (true) {
@@ -227,16 +277,19 @@ export async function execInShell(
         const exited = exitState.exited;
         if (exited !== null) {
           // 与原生一致：不抛错，返回部分输出 + shell 状态 + 重置消息
-          const status = exited.signal !== null
-            ? `[shell killed by signal: ${exited.signal}]`
-            : exited.code !== null
-              ? `[shell exited: code ${exited.code}]`
-              : "[shell exited]";
+          const status =
+            exited.signal !== null
+              ? `[shell killed by signal: ${exited.signal}]`
+              : exited.code !== null
+                ? `[shell exited: code ${exited.code}]`
+                : "[shell exited]";
           return [
             renderCapturedBash(partial(), lostPrefix),
             status,
             SHELL_RESET_MESSAGE,
-          ].filter((part) => part.length > 0).join("\n");
+          ]
+            .filter((part) => part.length > 0)
+            .join("\n");
         }
         const idx = out.lastIndexOf(needle);
         if (idx >= 0) {
@@ -284,32 +337,52 @@ function requiredForCommand(
   parameter: string,
   command: string,
 ): string {
-  if (value === undefined) throw new Error(`Parameter \`${parameter}\` is required for command: ${command}`);
+  if (value === undefined)
+    throw new Error(
+      `Parameter \`${parameter}\` is required for command: ${command}`,
+    );
   return value;
 }
 
 function resolveTarget(path: string): string {
-  if (path.trim().length === 0) throw new Error("path must be a non-empty string");
+  if (path.trim().length === 0)
+    throw new Error("path must be a non-empty string");
   if (!isAbsolute(path)) {
-    throw new Error(`The path ${path} is not an absolute path, it should start with \`/\`. Maybe you meant /${path}?`);
+    throw new Error(
+      `The path ${path} is not an absolute path, it should start with \`/\`. Maybe you meant /${path}?`,
+    );
   }
   return path;
 }
 
-async function statExisting(path: string, command: "view" | "str_replace" | "insert"): Promise<{ type: string }> {
+async function statExisting(
+  path: string,
+  command: "view" | "str_replace" | "insert",
+): Promise<{ type: string }> {
   let info;
   try {
     info = await stat(path);
   } catch {
-    throw new Error(`The path ${path} does not exist. Please provide a valid path.`);
+    throw new Error(
+      `The path ${path} does not exist. Please provide a valid path.`,
+    );
   }
   if (info.isDirectory() && command !== "view") {
-    throw new Error(`The path ${path} is a directory and only the \`view\` command can be used on directories`);
+    throw new Error(
+      `The path ${path} is a directory and only the \`view\` command can be used on directories`,
+    );
   }
-  return { type: info.isDirectory() ? "directory" : info.isFile() ? "file" : "other" };
+  return {
+    type: info.isDirectory() ? "directory" : info.isFile() ? "file" : "other",
+  };
 }
 
-function formatFileView(path: string, content: string, maxOutputChars: number, viewRange: number[] | undefined): string {
+function formatFileView(
+  path: string,
+  content: string,
+  maxOutputChars: number,
+  viewRange: number[] | undefined,
+): string {
   const allLines = content.split("\n");
   let lines = allLines;
   let initialLine = 1;
@@ -318,12 +391,14 @@ function formatFileView(path: string, content: string, maxOutputChars: number, v
   if (viewRange !== undefined) {
     const [requestedInitialLine, requestedFinalLine] = viewRange;
     if (
-      viewRange.length !== 2
-      || requestedInitialLine === undefined
-      || requestedFinalLine === undefined
-      || !viewRange.every(Number.isInteger)
+      viewRange.length !== 2 ||
+      requestedInitialLine === undefined ||
+      requestedFinalLine === undefined ||
+      !viewRange.every(Number.isInteger)
     ) {
-      throw new Error("Invalid `view_range`. It should be a list of two integers.");
+      throw new Error(
+        "Invalid `view_range`. It should be a list of two integers.",
+      );
     }
     initialLine = requestedInitialLine;
     finalLine = requestedFinalLine;
@@ -342,23 +417,35 @@ function formatFileView(path: string, content: string, maxOutputChars: number, v
         `Invalid \`view_range\`: [${viewRange.join(", ")}]. Its second element \`${finalLine}\` should be larger or equal than its first \`${initialLine}\``,
       );
     }
-    lines = finalLine === -1
-      ? allLines.slice(initialLine - 1)
-      : allLines.slice(initialLine - 1, finalLine);
+    lines =
+      finalLine === -1
+        ? allLines.slice(initialLine - 1)
+        : allLines.slice(initialLine - 1, finalLine);
     prompt += ` with view_range=[${initialLine}, ${finalLine}]`;
   }
   const numbered = lines
-    .map((line, index) => `${String(initialLine + index).padStart(6, " ")}  ${line}`)
+    .map(
+      (line, index) =>
+        `${String(initialLine + index).padStart(6, " ")}  ${line}`,
+    )
     .join("\n");
   return maybeTruncate(`${prompt}:\n${numbered}\n`, maxOutputChars);
 }
 
-async function listDirectory(path: string, maxOutputChars: number): Promise<string> {
+async function listDirectory(
+  path: string,
+  maxOutputChars: number,
+): Promise<string> {
   const rows: string[] = [];
   async function visit(dir: string, depth: number): Promise<void> {
     const entries = await readdir(dir, { withFileTypes: true });
     for (const entry of entries) {
-      if (entry.name.startsWith(".") || entry.name === "node_modules" || entry.name === "__pycache__") continue;
+      if (
+        entry.name.startsWith(".") ||
+        entry.name === "node_modules" ||
+        entry.name === "__pycache__"
+      )
+        continue;
       const full = resolve(dir, entry.name);
       const type = entry.isDirectory() ? "d" : entry.isFile() ? "f" : "?";
       rows.push(`${type}\t${full}`);
@@ -367,7 +454,12 @@ async function listDirectory(path: string, maxOutputChars: number): Promise<stri
   }
   rows.push(`d\t${path}`);
   await visit(path, 1);
-  rows.sort((left, right) => codepointCompare(left.slice(left.indexOf("\t") + 1), right.slice(right.indexOf("\t") + 1)));
+  rows.sort((left, right) =>
+    codepointCompare(
+      left.slice(left.indexOf("\t") + 1),
+      right.slice(right.indexOf("\t") + 1),
+    ),
+  );
   const listing = maybeTruncate(rows.join("\n") + "\n", maxOutputChars);
   return `Here're the files and directories up to 2 levels deep in ${path}, excluding hidden items, node_modules, and Python cache directories:\n${listing}\n`;
 }
@@ -395,7 +487,10 @@ function lineNumbersAt(content: string, offsets: readonly number[]): number[] {
   });
 }
 
-async function executeEditor(params: StrReplaceParams, cwd: string): Promise<string> {
+async function executeEditor(
+  params: StrReplaceParams,
+  cwd: string,
+): Promise<string> {
   const { command, path } = params;
   const target = resolveTarget(path);
   switch (command) {
@@ -403,24 +498,43 @@ async function executeEditor(params: StrReplaceParams, cwd: string): Promise<str
       const info = await statExisting(target, "view");
       if (info.type === "directory") {
         if (params.view_range !== undefined) {
-          throw new Error("The `view_range` parameter is not allowed when `path` points to a directory.");
+          throw new Error(
+            "The `view_range` parameter is not allowed when `path` points to a directory.",
+          );
         }
         return listDirectory(target, MAX_OUTPUT_CHARS);
       }
       if (info.type !== "file") {
-        throw new Error(`cannot view "${target}": not a regular file or directory`);
+        throw new Error(
+          `cannot view "${target}": not a regular file or directory`,
+        );
       }
       const content = await readFile(target, "utf8");
-      return formatFileView(target, content, MAX_OUTPUT_CHARS, params.view_range);
+      return formatFileView(
+        target,
+        content,
+        MAX_OUTPUT_CHARS,
+        params.view_range,
+      );
     }
     case "create": {
-      const fileText = requiredForCommand(params.file_text, "file_text", "create");
+      const fileText = requiredForCommand(
+        params.file_text,
+        "file_text",
+        "create",
+      );
       return withFileMutationQueue(target, async () => {
         try {
           await stat(target);
-          throw new Error(`File already exists at: ${target}. Cannot overwrite files using command \`create\`.`);
+          throw new Error(
+            `File already exists at: ${target}. Cannot overwrite files using command \`create\`.`,
+          );
         } catch (error) {
-          if (error instanceof Error && error.message.startsWith("File already exists")) throw error;
+          if (
+            error instanceof Error &&
+            error.message.startsWith("File already exists")
+          )
+            throw error;
           // ENOENT → 正常创建
         }
         await mkdir(dirname(target), { recursive: true });
@@ -429,7 +543,11 @@ async function executeEditor(params: StrReplaceParams, cwd: string): Promise<str
       });
     }
     case "str_replace": {
-      const oldStr = requiredForCommand(params.old_str, "old_str", "str_replace");
+      const oldStr = requiredForCommand(
+        params.old_str,
+        "old_str",
+        "str_replace",
+      );
       const newStr = params.new_str ?? "";
       const info = await statExisting(target, "str_replace");
       if (info.type !== "file") {
@@ -440,7 +558,9 @@ async function executeEditor(params: StrReplaceParams, cwd: string): Promise<str
         const offsets = matchOffsets(before, oldStr);
         const offset = offsets[0];
         if (offset === undefined) {
-          throw new Error(`No replacement was performed, old_str \`${oldStr}\` did not appear verbatim in ${target}.`);
+          throw new Error(
+            `No replacement was performed, old_str \`${oldStr}\` did not appear verbatim in ${target}.`,
+          );
         }
         if (offsets.length > 1) {
           const lines = lineNumbersAt(before, offsets);
@@ -448,14 +568,19 @@ async function executeEditor(params: StrReplaceParams, cwd: string): Promise<str
             `No replacement was performed. Multiple occurrences of old_str \`${oldStr}\` in lines [${lines.join(", ")}]. Please ensure it is unique`,
           );
         }
-        const after = before.slice(0, offset) + newStr + before.slice(offset + oldStr.length);
+        const after =
+          before.slice(0, offset) +
+          newStr +
+          before.slice(offset + oldStr.length);
         await writeFile(target, after, "utf8");
         return `The file ${target} has been edited successfully.`;
       });
     }
     case "insert": {
       if (params.insert_line === undefined) {
-        throw new Error("Parameter `insert_line` is required for command: insert");
+        throw new Error(
+          "Parameter `insert_line` is required for command: insert",
+        );
       }
       const value = requiredForCommand(params.new_str, "new_str", "insert");
       const info = await statExisting(target, "insert");
@@ -465,7 +590,11 @@ async function executeEditor(params: StrReplaceParams, cwd: string): Promise<str
       return withFileMutationQueue(target, async () => {
         const before = await readFile(target, "utf8");
         const lines = before.split("\n");
-        if (!Number.isInteger(params.insert_line) || params.insert_line! < 0 || params.insert_line! > lines.length) {
+        if (
+          !Number.isInteger(params.insert_line) ||
+          params.insert_line! < 0 ||
+          params.insert_line! > lines.length
+        ) {
           throw new Error(
             `Invalid \`insert_line\` parameter: ${params.insert_line}. It should be within the range of lines of the file: [0, ${lines.length}]`,
           );
@@ -522,33 +651,52 @@ function createBashDefinition(): ToolDefinition<any, unknown, unknown> {
       : "Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last 2000 lines or 50KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.",
     promptSnippet: "Execute bash commands (ls, grep, find, etc.)",
     parameters: persistent ? DSH_BASH_SCHEMA : PI_BASH_SCHEMA,
-    async execute(_toolCallId, params: { command: string; timeout?: number }, signal, _onUpdate, ctx: ExtensionContext) {
+    async execute(
+      _toolCallId,
+      params: { command: string; timeout?: number },
+      signal,
+      _onUpdate,
+      ctx: ExtensionContext,
+    ) {
       const sessionId = ctx.sessionManager.getSessionId();
       if (persistent) {
         return {
-          content: [{ type: "text", text: await execInShell(sessionId, ctx.cwd, params.command, signal) }],
+          content: [
+            {
+              type: "text",
+              text: await execInShell(
+                sessionId,
+                ctx.cwd,
+                params.command,
+                signal,
+              ),
+            },
+          ],
           details: {},
         };
       }
       // off 模式：与 pi 内置 bash 行为一致（每次调用全新 shell）
-      const output = await new Promise<string>((resolvePromise, rejectPromise) => {
-        const chunks: Buffer[] = [];
-        localBashOps.exec(params.command, ctx.cwd, {
-          onData: (data) => chunks.push(data),
-          signal,
-          timeout: params.timeout,
-        }).then(
-          ({ exitCode }) => {
-            const text = Buffer.concat(chunks).toString("utf8");
-            if (exitCode !== 0 && exitCode !== null) {
-              rejectPromise(new Error(`${text}\nCommand exited with code ${exitCode}`));
-            } else {
-              resolvePromise(text || "(no output)");
-            }
-          },
-          rejectPromise,
-        );
-      });
+      const output = await new Promise<string>(
+        (resolvePromise, rejectPromise) => {
+          const chunks: Buffer[] = [];
+          localBashOps
+            .exec(params.command, ctx.cwd, {
+              onData: (data) => chunks.push(data),
+              signal,
+              timeout: params.timeout,
+            })
+            .then(({ exitCode }) => {
+              const text = Buffer.concat(chunks).toString("utf8");
+              if (exitCode !== 0 && exitCode !== null) {
+                rejectPromise(
+                  new Error(`${text}\nCommand exited with code ${exitCode}`),
+                );
+              } else {
+                resolvePromise(text || "(no output)");
+              }
+            }, rejectPromise);
+        },
+      );
       return { content: [{ type: "text", text: output }], details: {} };
     },
   };
@@ -570,7 +718,13 @@ export default function (pi: ExtensionAPI): void {
     label: "str_replace_editor",
     description: DSH_EDITOR_DESCRIPTION,
     parameters: STR_REPLACE_SCHEMA,
-    async execute(_toolCallId, params: StrReplaceParams, _signal, _onUpdate, ctx: ExtensionContext) {
+    async execute(
+      _toolCallId,
+      params: StrReplaceParams,
+      _signal,
+      _onUpdate,
+      ctx: ExtensionContext,
+    ) {
       return {
         content: [{ type: "text", text: await executeEditor(params, ctx.cwd) }],
         details: {},
@@ -578,7 +732,10 @@ export default function (pi: ExtensionAPI): void {
     },
   });
 
-  function applyMode(next: Mode, opts: { model?: string | null; full?: boolean } = {}): void {
+  function applyMode(
+    next: Mode,
+    opts: { model?: string | null; full?: boolean } = {},
+  ): void {
     const prev = mode;
     mode = next;
     anchoredFull = !!opts.full;
@@ -588,20 +745,37 @@ export default function (pi: ExtensionAPI): void {
     if (next !== "off") pi.setThinkingLevel("max");
     void (async () => {
       if (next !== "off" && opts.model !== null) {
-        const spec = (opts.model ?? "opencode-go/deepseek-v4-pro").split("/");
-        const [provider, modelId] = spec.length === 2 ? spec : ["opencode-go", spec[0]];
+        const spec = (opts.model ?? MODEL_FULL_NAME).split("/");
+        const [provider, modelId] =
+          spec.length === 2 ? spec : [PROVIDER, spec[0]];
         const model = ctxRef.modelRegistry.find(provider, modelId);
         if (model) {
           const ok = await pi.setModel(model);
-          ctxRef.ui.notify(ok ? `模型已切换: ${provider}/${modelId}` : `模型 ${provider}/${modelId} 缺少 API key`, ok ? "info" : "warning");
+          ctxRef.ui.notify(
+            ok
+              ? `模型已切换: ${provider}/${modelId}`
+              : `模型 ${provider}/${modelId} 缺少 API key`,
+            ok ? "info" : "warning",
+          );
         } else {
           ctxRef.ui.notify(`未找到模型 ${provider}/${modelId}`, "warning");
         }
       }
-      const label = next === "minimal" ? "极简模式" : next === "anchored" ? "锚定两阶段" : "已关闭";
-      ctxRef.ui.notify(`DSH 复刻: ${label}（工具: ${allowedTools().join(", ")}）`, "info");
+      const label =
+        next === "minimal"
+          ? "极简模式"
+          : next === "anchored"
+            ? "锚定两阶段"
+            : "已关闭";
+      ctxRef.ui.notify(
+        `DSH 复刻: ${label}（工具: ${allowedTools().join(", ")}）`,
+        "info",
+      );
       if (prev === "off" && next !== "off") {
-        ctxRef.ui.notify("System prompt 已替换为: You are a helpful software engineer assistant.", "info");
+        ctxRef.ui.notify(
+          "System prompt 已替换为: You are a helpful software engineer assistant.",
+          "info",
+        );
       }
     })();
   }
@@ -622,10 +796,13 @@ export default function (pi: ExtensionAPI): void {
   pi.on("session_start", (_event, ctx) => {
     ctxRef = ctx;
     if (pi.getFlag("dsh-minimal") && mode === "off") {
-      applyMode("minimal", { model: "opencode-go/deepseek-v4-pro" });
+      applyMode("minimal", { model: MODEL_FULL_NAME });
     }
     if (pi.getFlag("dsh-anchored") && mode === "off") {
-      applyMode("anchored", { model: "opencode-go/deepseek-v4-pro", full: true });
+      applyMode("anchored", {
+        model: MODEL_FULL_NAME,
+        full: true,
+      });
     }
   });
 
@@ -659,7 +836,10 @@ export default function (pi: ExtensionAPI): void {
     if (mode !== "anchored" || anchoredPromoted || event.isError) return;
     anchoredPromoted = true;
     pi.setActiveTools(allowedTools());
-    ctxRef.ui.notify(`锚定提升: 工具目录已放开 → ${allowedTools().join(", ")}`, "info");
+    ctxRef.ui.notify(
+      `锚定提升: 工具目录已放开 → ${allowedTools().join(", ")}`,
+      "info",
+    );
   });
 
   // 兜底：阻止活动集合之外的工具
@@ -667,7 +847,10 @@ export default function (pi: ExtensionAPI): void {
     if (mode === "off") return;
     const allowed = new Set(allowedTools());
     if (!allowed.has(event.toolName)) {
-      return { block: true, reason: `当前处于 DSH ${mode === "minimal" ? "极简" : "锚定"}模式，仅允许工具: ${allowedTools().join(", ")}` };
+      return {
+        block: true,
+        reason: `当前处于 DSH ${mode === "minimal" ? "极简" : "锚定"}模式，仅允许工具: ${allowedTools().join(", ")}`,
+      };
     }
   });
 
@@ -676,24 +859,28 @@ export default function (pi: ExtensionAPI): void {
   // -------------------------------------------------------------------------
 
   pi.registerCommand("dsh-minimal", {
-    description: "启用 DSH 极简模式复刻（persona 完整提示词 + bash/str_replace_editor + max 思考 + 官方采样）",
+    description:
+      "启用 DSH 极简模式复刻（persona 完整提示词 + bash/str_replace_editor + max 思考 + 官方采样）",
     handler: async (args, ctx) => {
       ctxRef = ctx;
       const noModel = /\b--no-model\b/.test(args ?? "");
       const modelMatch = /--model\s+(\S+)/.exec(args ?? "");
-      applyMode("minimal", { model: noModel ? null : (modelMatch?.[1] ?? "opencode-go/deepseek-v4-pro") });
+      applyMode("minimal", {
+        model: noModel ? null : (modelMatch?.[1] ?? MODEL_FULL_NAME),
+      });
     },
   });
 
   pi.registerCommand("dsh-anchored", {
-    description: "启用锚定两阶段（bash+read 起步，首调后放开；--full 放开全部工具）",
+    description:
+      "启用锚定两阶段（bash+read 起步，首调后放开；--full 放开全部工具）",
     handler: async (args, ctx) => {
       ctxRef = ctx;
       const noModel = /\b--no-model\b/.test(args ?? "");
       const modelMatch = /--model\s+(\S+)/.exec(args ?? "");
       applyMode("anchored", {
         full: /\b--full\b/.test(args ?? ""),
-        model: noModel ? null : (modelMatch?.[1] ?? "opencode-go/deepseek-v4-pro"),
+        model: noModel ? null : (modelMatch?.[1] ?? MODEL_FULL_NAME),
       });
     },
   });
