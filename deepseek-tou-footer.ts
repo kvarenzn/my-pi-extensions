@@ -82,6 +82,7 @@ export const DEEPSEEK_CNY_RATES: Readonly<
     { input: number; output: number; cacheRead: number; cacheWrite: number }
   >
 > = {
+  "deepseek-flash": { input: 1, output: 4, cacheRead: 0.02, cacheWrite: 0 },
   "deepseek-v4-flash": { input: 1, output: 4, cacheRead: 0.02, cacheWrite: 0 },
   "deepseek-v4-flash-vision-exp": {
     input: 1,
