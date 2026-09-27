@@ -34,7 +34,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder, TreeSelectorComponent } from "@earendil-works/pi-coding-agent";
-import { matchesKey, Key, Text } from "@earendil-works/pi-tui";
+import { matchesKey, Key, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { readdir, readFile } from "node:fs/promises";
@@ -773,38 +773,48 @@ export default function (pi: ExtensionAPI) {
         const origRender = treeList.render.bind(treeList);
         treeList.render = (width: number): string[] => {
           const lines = origRender(width);
+          // The Component contract requires every rendered line's visible
+          // width to be <= `width`; the TUI aborts ("Line N visible width: X")
+          // otherwise.  This extension appends its own (potentially long)
+          // lines, so clamp each one.
+          const fit = (line: string): string =>
+            truncateToWidth(line, Math.max(0, width));
           if (confirming !== null) {
             lines.push(
-              theme.fg("warning",
-                "  " + "─".repeat(Math.max(20, width - 20))),
+              fit(theme.fg("warning",
+                "  " + "─".repeat(Math.max(0, width - 2)))),
             );
             if (confirming.action === "delete") {
               lines.push(
-                theme.bold(theme.fg("warning", "  DELETE")) +
-                  theme.fg("muted", " this subtree?") +
-                  "  " +
-                  theme.fg("success", "[y/Enter]") +
-                  theme.fg("muted", " confirm") +
-                  "  " +
-                  theme.fg("error", "[Esc/n]") +
-                  theme.fg("muted", " cancel"),
+                fit(
+                  theme.bold(theme.fg("warning", "  DELETE")) +
+                    theme.fg("muted", " this subtree?") +
+                    "  " +
+                    theme.fg("success", "[y/Enter]") +
+                    theme.fg("muted", " confirm") +
+                    "  " +
+                    theme.fg("error", "[Esc/n]") +
+                    theme.fg("muted", " cancel"),
+                ),
               );
             } else {
               lines.push(
-                theme.bold(theme.fg("warning", "  PRUNE")) +
-                  theme.fg("muted", " — keep only Root → this entry, delete all other branches?") +
-                  "  " +
-                  theme.fg("success", "[y/Enter]") +
-                  theme.fg("muted", " confirm") +
-                  "  " +
-                  theme.fg("error", "[Esc/n]") +
-                  theme.fg("muted", " cancel"),
+                fit(
+                  theme.bold(theme.fg("warning", "  PRUNE")) +
+                    theme.fg("muted", " — keep only Root → this entry, delete all other branches?") +
+                    "  " +
+                    theme.fg("success", "[y/Enter]") +
+                    theme.fg("muted", " confirm") +
+                    "  " +
+                    theme.fg("error", "[Esc/n]") +
+                    theme.fg("muted", " cancel"),
+                ),
               );
             }
           } else {
             lines.push(
-              theme.fg("dim",
-                "  Ctrl+Delete delete subtree  |  Shift+Delete keep only this path"),
+              fit(theme.fg("dim",
+                "  Ctrl+Delete delete subtree  |  Shift+Delete keep only this path")),
             );
           }
           return lines;
