@@ -13,7 +13,11 @@
  * Answers are returned as arrays of labels for the LLM to use.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+  defineTool,
+  type ExtensionAPI,
+  type ExtensionToolContext,
+} from "@earendil-works/pi-coding-agent";
 import {
   Editor,
   type EditorTheme,
@@ -62,6 +66,31 @@ interface ToolOutput {
 /** Internal option with the synthetic "Type something" entry */
 interface RenderOption extends OptionDef {
   isOther?: boolean;
+}
+
+/**
+ * Minimal structural view of `SessionManager` used for tree branch surgery.
+ * The extension context types it as `ReadonlySessionManager`, but the runtime
+ * object exposes the mutable API as well (see the tree-delete extension).
+ */
+interface SessionMessageLike {
+  role: string;
+  toolName?: string;
+  toolCallId?: string;
+  content: Array<{ type: string; name?: string; id?: string }>;
+  details?: ToolOutput;
+}
+interface MutableSessionEntry {
+  id: string;
+  type: string;
+  parentId: string | null;
+  message?: SessionMessageLike;
+}
+interface MutableSessionManager {
+  getEntry(id: string): MutableSessionEntry | undefined;
+  getChildren(parentId: string): MutableSessionEntry[];
+  branch(id: string): void;
+  appendMessage(message: unknown): string;
 }
 
 // ─── Schema ──────────────────────────────────────────────────────────────────
@@ -284,7 +313,7 @@ const editorThemeFor = (theme: { fg: (name: string, text: string) => string }): 
 // ─── Extension ───────────────────────────────────────────────────────────────
 
 export default function questionExtension(pi: ExtensionAPI) {
-  pi.registerTool({
+  const questionTool = defineTool({
     name: "question",
     label: "Question",
     description: [
@@ -1249,5 +1278,165 @@ export default function questionExtension(pi: ExtensionAPI) {
       }
       return new Text(lines.join("\n"), 0, 0);
     },
+  });
+
+  pi.registerTool(questionTool);
+
+  // A re-answer continuation needs a message to start a turn (pi exposes no
+  // `continue()` to extensions), but the model should see the same context as
+  // a normal tool-result continuation. Strip that trigger-only marker from
+  // every request so the provider transcript ends at the new tool result.
+  pi.on("context", (event) => {
+    const messages = event.messages.filter(
+      (m) => !(m.role === "custom" && m.customType === "question-reanswer"),
+    );
+    return messages.length === event.messages.length ? undefined : { messages };
+  });
+
+  // ── /tree re-answer support ───────────────────────────────────────
+  // When /tree lands on a `question` tool result, offer to answer the same
+  // questions again. Confirmed answers are written as a fresh tool result on
+  // a new branch (the old answer stays as alternative history), so both the
+  // model context and the transcript show the revised answers.
+  pi.on("session_tree", async (event, ctx) => {
+    if (!event.newLeafId) return;
+    if (ctx.mode !== "tui" && ctx.mode !== "rpc") return;
+
+    const sm = ctx.sessionManager as unknown as MutableSessionManager;
+    const entry = sm.getEntry(event.newLeafId);
+    if (!entry || entry.type !== "message") return;
+    const message = entry.message;
+    if (
+      !message ||
+      message.role !== "toolResult" ||
+      message.toolName !== "question"
+    ) {
+      return;
+    }
+
+    const details = message.details;
+    const questions = details?.questions;
+    if (
+      !details ||
+      details.cancelled ||
+      !Array.isArray(questions) ||
+      questions.length === 0
+    ) {
+      return;
+    }
+
+    const REANSWER = "重答（重新回答 + 续跑）";
+    const CANCEL = "取消（什么都不做）";
+    const choice = await ctx.ui.select(
+      questions.length > 1
+        ? `已回到提问点。是否重新回答这 ${questions.length} 个问题？`
+        : "已回到提问点。是否重新回答这个问题？",
+      [REANSWER, CANCEL],
+    );
+    if (choice !== REANSWER) return;
+
+    // Reuse the tool's own UI flow, returning the same structured output.
+    const result = await questionTool.execute(
+      "question-reanswer",
+      { questions },
+      undefined,
+      undefined,
+      ctx as ExtensionToolContext,
+    );
+    const out = result.details as ToolOutput | undefined;
+    if (!out || out.cancelled || out.answers.length === 0) return;
+
+    const parentId = entry.parentId;
+    if (!parentId) return;
+    const parent = sm.getEntry(parentId);
+    const parentMessage = parent?.message;
+    if (
+      !parent ||
+      parent.type !== "message" ||
+      !parentMessage ||
+      parentMessage.role !== "assistant"
+    ) {
+      return;
+    }
+
+    const calls = (parentMessage.content ?? []).filter(
+      (c) => c.type === "toolCall" && c.id,
+    );
+    const selectedCall =
+      calls.find(
+        (c) => c.name === "question" && c.id === message.toolCallId,
+      ) ?? calls.find((c) => c.name === "question");
+    const toolCallId = selectedCall?.id;
+    if (!toolCallId) return;
+
+    // Collect the old results of every tool call in this assistant message so
+    // that when several tools ran in one turn the new branch keeps them all
+    // resolved (otherwise a dangling tool call breaks the next request).
+    const oldResults = new Map<string, Record<string, unknown>>();
+    for (const child of sm.getChildren(parentId)) {
+      const childMessage = child.message;
+      if (
+        child.type === "message" &&
+        childMessage?.role === "toolResult" &&
+        childMessage.toolCallId
+      ) {
+        oldResults.set(
+          childMessage.toolCallId,
+          childMessage as unknown as Record<string, unknown>,
+        );
+      }
+    }
+
+    const newResult = {
+      role: "toolResult",
+      toolCallId,
+      toolName: "question",
+      content: [{ type: "text", text: buildLLMOutput(questions, out.answers) }],
+      details: {
+        questions,
+        answers: out.answers,
+        cancelled: false,
+        answerArrays: buildAnswerArrays(out.answers),
+        textSummary: buildTextOutput(questions, out.answers),
+      },
+      isError: false,
+      timestamp: Date.now(),
+    };
+
+    sm.branch(parentId);
+    for (const call of calls) {
+      if (call.id === toolCallId) {
+        sm.appendMessage(newResult);
+        continue;
+      }
+      const old = call.id ? oldResults.get(call.id) : undefined;
+      if (old) {
+        sm.appendMessage({ ...old, timestamp: Date.now() });
+      } else if (call.id) {
+        sm.appendMessage({
+          role: "toolResult",
+          toolCallId: call.id,
+          toolName: call.name ?? "unknown",
+          content: [{ type: "text", text: "(result not replayed)" }],
+          isError: false,
+          timestamp: Date.now(),
+        });
+      }
+    }
+
+    // Trigger a continuation turn. The marker message is removed again by the
+    // `context` handler above, so the model request ends at the new tool result
+    // exactly like a normal tool-calling continuation.
+    const revisedSummary = buildLLMOutput(questions, out.answers);
+    setTimeout(() => {
+      pi.sendMessage(
+        {
+          customType: "question-reanswer",
+          content: `The user revised their answer to your question.\n${revisedSummary}`,
+          display: false,
+        },
+        { triggerTurn: true },
+      );
+    }, 0);
   });
 }
